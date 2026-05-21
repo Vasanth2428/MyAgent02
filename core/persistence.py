@@ -60,6 +60,15 @@ class PersistentMemoryStore:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Check if telemetry column exists, if not add it
+            try:
+                conn.execute("SELECT telemetry FROM memory LIMIT 1")
+            except sqlite3.OperationalError:
+                try:
+                    conn.execute("ALTER TABLE memory ADD COLUMN telemetry TEXT")
+                    logger.info("Migrated SQLite database: added telemetry column to memory table.")
+                except Exception as e:
+                    logger.error(f"Failed to add telemetry column: {e}")
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_memory_session_timestamp 
                 ON memory (session_id, timestamp)
@@ -67,13 +76,13 @@ class PersistentMemoryStore:
             conn.commit()
         self.execute_with_retry(_init)
 
-    def add_entry(self, session_id: str, text: str, role: str, importance: float = 1.0):
+    def add_entry(self, session_id: str, text: str, role: str, importance: float = 1.0, telemetry: str = None):
         """Persists a single conversation turn to the database."""
         t_start = time.time()
         def _insert(conn):
             conn.execute(
-                "INSERT INTO memory (session_id, role, text, importance) VALUES (?, ?, ?, ?)",
-                (session_id, role, text, importance)
+                "INSERT INTO memory (session_id, role, text, importance, telemetry) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, text, importance, telemetry)
             )
             conn.commit()
         self.execute_with_retry(_insert)
@@ -85,7 +94,7 @@ class PersistentMemoryStore:
         def _fetch(conn):
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                "SELECT role, text, importance, timestamp FROM memory WHERE session_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?",
+                "SELECT role, text, importance, telemetry, timestamp FROM memory WHERE session_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?",
                 (session_id, limit)
             )
             return [dict(row) for row in cursor.fetchall()][::-1]

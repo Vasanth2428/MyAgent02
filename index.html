@@ -3,91 +3,218 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RAG CONTROL CONSOLE</title>
-    <meta name="description" content="RAG Context Engine — Neural Retrieval-Augmented Generation Dashboard">
+    <title>RAG CONTEXT HUB & HUD CONSOLE</title>
+    <meta name="description" content="Advanced Neural Retrieval-Augmented Generation & Context Overflow Simulator">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
     <header>
-        <div class="sys-title">RAG CONTROL CONSOLE</div>
+        <div class="header-brand">
+            <div class="logo-glow"></div>
+            <span class="sys-title">RAG_CONTEXT_ORCHESTRATOR</span>
+            <span class="sys-version">v2.1.0-sim</span>
+        </div>
         <div class="status-strip">
-            <span>DB_STATUS: ONLINE</span>
-            <span>DATA_UNITS: <span id="knowledge-count">0</span></span>
-            <span id="session-tag">SID: ...</span>
+            <span class="status-indicator">
+                <span class="status-dot online"></span>
+                CORE_STATUS: <strong style="color: var(--accent-cyan);">ONLINE</strong>
+            </span>
+            <span class="status-item">INDEXED_DOCS: <strong id="knowledge-count" class="glow-value">0</strong></span>
+            <span id="session-tag" class="session-badge">SID: ...</span>
         </div>
     </header>
 
     <div class="main-grid">
-        <!-- LEFT PANEL -->
-        <div style="display: flex; flex-direction: column; gap: 1px; min-height: 0;">
-            <div class="box" style="flex: 1;">
-                <div class="section-label">PROCESS_LOGS</div>
+        <!-- LEFT PANEL: PIPELINE LOGS & OVERFLOW MONITOR -->
+        <div class="sidebar-left">
+            <div class="box box-logs">
+                <div class="section-label">
+                    <span class="label-text">PIPELINE_ACTIVITY_LOGS</span>
+                    <span class="pulse-indicator"></span>
+                </div>
                 <div id="log-window" class="log-container"></div>
             </div>
-            <div class="box" style="flex: 1;">
+            
+            <div class="box box-overflow-debugger">
+                <div class="section-label warning-section">
+                    <span class="label-text">OVERFLOW_RECOVERY_SHELL</span>
+                    <span id="overflow-indicator-dot" class="indicator-dot nominal"></span>
+                </div>
+                <div id="overflow-alert-banner" class="overflow-banner alert-nominal">
+                    SYSTEM RUNNING IN NOMINAL STATE
+                </div>
+                <div id="overflow-log-window" class="log-container overflow-log">
+                    <div class="empty-shell-msg">Awaiting context overflow simulation trigger...</div>
+                </div>
+            </div>
+
+            <div class="box box-inspector">
                 <div class="section-label">GLASS_BOX_INSPECTOR</div>
-                <div id="inspector-window" class="log-container" style="color: var(--accent); font-family: var(--font-mono);">Awaiting execution...</div>
+                <div id="inspector-window" class="inspector-container">
+                    <div class="inspector-placeholder">Awaiting next transaction to stream telemetry...</div>
+                </div>
             </div>
         </div>
 
-        <!-- CHAT -->
+        <!-- CENTER PANEL: CHAT THREAD -->
         <div class="box chat-container">
-            <div class="section-label">INTERACTION_THREAD</div>
+            <div class="section-label chat-header">
+                <span class="label-text">INTERACTION_THREAD</span>
+                <span class="mode-badge" id="active-mode-badge">CONTEXT_ENGINE</span>
+            </div>
             <div id="chat-window"></div>
             <form id="comm-form" class="input-bar">
-                <input type="text" id="comm-input" placeholder="Query input..." required autofocus autocomplete="off">
-                <button type="submit" id="comm-btn">EXECUTE</button>
-                <button type="button" id="stop-btn" style="display: none; background: #990000;">STOP</button>
+                <div class="input-wrapper">
+                    <input type="text" id="comm-input" placeholder="Enter query to process through context engine..." required autofocus autocomplete="off">
+                    <div class="input-glow"></div>
+                </div>
+                <button type="submit" id="comm-btn" class="glow-btn">
+                    <span>EXECUTE</span>
+                    <div class="btn-glow"></div>
+                </button>
+                <button type="button" id="stop-btn" class="abort-btn" style="display: none;">
+                    <span>STOP</span>
+                </button>
             </form>
         </div>
 
-        <!-- TELEMETRY & CONTEXT -->
+        <!-- RIGHT PANEL: TELEMETRY, CONTROL & CONTEXT DUMP -->
         <div class="sidebar-right">
-            <div class="box">
-                <div class="section-label">PERFORMANCE_METRICS</div>
+            <!-- CONTEXT BUDGET CONTROL -->
+            <div class="box box-control">
+                <div class="section-label">CONTEXT_BUDGET_MANAGER</div>
+                <div class="control-panel">
+                    <!-- Progress Bar -->
+                    <div class="budget-progress-section">
+                        <div class="progress-labels">
+                            <span class="lbl-used">PROMPT: <strong id="token-used-val">0</strong> TKN</span>
+                            <span class="lbl-limit">LIMIT: <strong id="token-limit-val-readout">4096</strong> TKN</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div id="token-progress-fill" class="progress-fill" style="width: 0%;"></div>
+                        </div>
+                        <div id="token-percentage-text" class="percentage-readout">0% of window occupied</div>
+                    </div>
+
+                    <!-- Slider Control -->
+                    <div class="slider-control-group">
+                        <div class="slider-labels">
+                            <span>EFFECTIVE WINDOW LIMIT</span>
+                            <span class="slider-val-glow"><span id="context-limit-slider-val">4096</span> TKN</span>
+                        </div>
+                        <input type="range" id="context-limit-slider" min="200" max="8192" value="4096" step="50" class="hud-slider">
+                    </div>
+
+                    <!-- Presets -->
+                    <div class="preset-group">
+                        <span class="control-sublabel">WINDOW SIZE PRESETS</span>
+                        <div class="preset-grid">
+                            <button type="button" class="preset-btn pulse-warning" data-val="300">300 TKN (Simulate)</button>
+                            <button type="button" class="preset-btn" data-val="800">800 TKN</button>
+                            <button type="button" class="preset-btn" data-val="1500">1500 TKN</button>
+                            <button type="button" class="preset-btn active" data-val="4096">4096 TKN</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SYSTEM METRICS HUD -->
+            <div class="box box-stats">
+                <div class="section-label">PERFORMANCE_METRICS_HUD</div>
                 <div class="stats-panel">
-                    <div class="stat-box"><span id="stat-q" class="stat-val">0</span><span class="stat-key">TOTAL_QUERIES</span></div>
-                    <div class="stat-box"><span id="stat-c" class="stat-val">0%</span><span class="stat-key">CONTEXT_REDUCTION</span></div>
-                    <div class="stat-box"><span id="stat-t" class="stat-val">0ms</span><span class="stat-key">ROUND_TRIP</span></div>
-                    <div class="stat-box"><span id="stat-m" class="stat-val">0</span><span class="stat-key">ACTIVE_THREAD_MEM</span></div>
-                    <div class="stat-box"><span id="stat-cpu" class="stat-val">0%</span><span class="stat-key">HOST_CPU</span></div>
-                    <div class="stat-box"><span id="stat-ram" class="stat-val">0%</span><span class="stat-key">HOST_RAM</span></div>
-                    <div class="stat-box"><span id="stat-ctx" class="stat-val">0%</span><span class="stat-key">PROMPT_WINDOW</span></div>
-                    <div class="stat-box"><span id="stat-tps" class="stat-val">0 t/s</span><span class="stat-key">LLM_SPEED</span></div>
-                    <div class="stat-box"><span id="stat-cost" class="stat-val">$0.00</span><span class="stat-key">EST_COST</span></div>
+                    <div class="stat-box">
+                        <span id="stat-q" class="stat-val">0</span>
+                        <span class="stat-key">TOTAL_QUERIES</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-c" class="stat-val">0%</span>
+                        <span class="stat-key">COMPRESSION_RATIO</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-t" class="stat-val">0ms</span>
+                        <span class="stat-key">ROUND_TRIP_LATENCY</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-m" class="stat-val">0</span>
+                        <span class="stat-key">CONVERSATION_TURNS</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-cpu" class="stat-val">0%</span>
+                        <span class="stat-key">HOST_CPU</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-ram" class="stat-val">0%</span>
+                        <span class="stat-key">HOST_RAM</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-ctx" class="stat-val">0%</span>
+                        <span class="stat-key">PROMPT_WINDOW</span>
+                    </div>
+                    <div class="stat-box">
+                        <span id="stat-tps" class="stat-val">0 t/s</span>
+                        <span class="stat-key">LLM_SPEED</span>
+                    </div>
                 </div>
             </div>
 
-            <div class="box mode-selector">
-                <div class="section-label" style="border: none; padding: 0; margin-bottom: 0.8rem;">PROCESSING_MODE</div>
-                <div class="mode-grid">
-                    <label class="mode-btn">
-                        <input type="radio" name="engine-mode" value="context_engine" checked style="display: none;">
-                        <div class="mode-label">ADVANCED_PIPELINE</div>
-                    </label>
-                    <label class="mode-btn">
-                        <input type="radio" name="engine-mode" value="normal" style="display: none;">
-                        <div class="mode-label">SIMPLE_RAG</div>
-                    </label>
-                    <label class="mode-btn">
-                        <input type="radio" name="engine-mode" value="agentic" style="display: none;">
-                        <div class="mode-label">AGENTIC_LOOP</div>
-                    </label>
+            <!-- PROCESSING MODE -->
+            <div class="box box-mode">
+                <div class="section-label">PROCESSING_MODE</div>
+                <div class="mode-selector">
+                    <div class="mode-grid">
+                        <label class="mode-btn">
+                            <input type="radio" name="engine-mode" value="context_engine" checked style="display: none;">
+                            <div class="mode-label">ADVANCED_PIPELINE</div>
+                        </label>
+                        <label class="mode-btn">
+                            <input type="radio" name="engine-mode" value="normal" style="display: none;">
+                            <div class="mode-label">SIMPLE_RAG</div>
+                        </label>
+                        <label class="mode-btn">
+                            <input type="radio" name="engine-mode" value="agentic" style="display: none;">
+                            <div class="mode-label">AGENTIC_LOOP</div>
+                        </label>
+                    </div>
                 </div>
             </div>
 
+            <!-- SOURCE RETRIEVAL -->
             <div class="box data-panel">
-                <div class="section-label">SOURCE_CONTEXT_DUMP</div>
-                <div id="recon-window" class="readout-list"></div>
+                <div class="section-label">RETRIEVED_KNOWLEDGE_DUMP</div>
+                <div id="recon-window" class="readout-list">
+                    <div class="readout-empty">No active retrieval context. Submit a query to see documents.</div>
+                </div>
             </div>
 
-            <div class="box" style="padding: 0.8rem;">
-                <div id="drop-area" class="upload-area">INJECT_DOCUMENT</div>
-                <input type="file" id="file-in" style="display: none;">
-                <div id="up-msg" style="font-size: 0.6rem; text-align: center; margin-top: 0.5rem; color: var(--accent); display: none;"></div>
+            <!-- INJECT DOCUMENT -->
+            <div class="box box-upload">
+                <div class="upload-container">
+                    <div id="drop-area" class="upload-area">
+                        <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span class="upload-text">INJECT_DOCUMENT_SOURCE</span>
+                        <span class="upload-subtext">Drag & drop PDF/TXT files or click to browse</span>
+                    </div>
+                    <input type="file" id="file-in" style="display: none;">
+                    <div id="up-msg" class="upload-feedback"></div>
+                </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Telemetry Modal -->
+    <div id="telemetry-modal" class="modal-backdrop">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>CONTEXT_OVERFLOW_TELEMETRY_REPORT</h3>
+                <button type="button" class="modal-close" onclick="closeTelemetryModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="telemetry-modal-body"></div>
         </div>
     </div>
 

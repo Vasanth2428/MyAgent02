@@ -16,7 +16,7 @@ import os
 import logging
 import time
 import psutil
-from typing import Dict, Generator
+from typing import Dict, Generator, Optional
 import tiktoken
 from core.llm import LLMService
 
@@ -87,10 +87,12 @@ class RAGContextEngine:
             self.memories[session_id] = memory
         return self.memories[session_id]
 
-    def save_memory(self, session_id: str, text: str, role: str, importance: float = 1.0):
+    def save_memory(self, session_id: str, text: str, role: str, importance: float = 1.0, telemetry: dict = None):
         """Saves a turn to both the active RAM context and persistent database."""
+        import json
         self.get_memory(session_id).add(text, importance, role)
-        self.persistent_memory.add_entry(session_id, text, role, importance)
+        telemetry_json = json.dumps(telemetry) if telemetry else None
+        self.persistent_memory.add_entry(session_id, text, role, importance, telemetry=telemetry_json)
 
     # ------------------------------------------------------------------
     # Pipeline phases (private helpers)
@@ -279,16 +281,127 @@ class RAGContextEngine:
         latencies['phase_6_generation_ms'] = round((time.time() - t) * 1000, 2)
         return response, prompt, exact_tokens, ctx_used_pct
 
+    def _handle_context_overflow(self, query: str, final_context: str, memory_text: str,
+                                 compressed_docs: str, memory, all_raw: list,
+                                 context_limit: int) -> tuple:
+        """
+        Detects, processes, and recovers from context overflows step-by-step.
+        Returns (new_final_context, new_memory_text, new_compressed_docs, overflow_occurred, overflow_steps, initial_tokens, final_prompt_tokens, new_mem_tokens, new_doc_tokens)
+        """
+        import time
+        from core.config import MEMORY_TOKEN_BUDGET
+        
+        # Build prompt templates
+        instruction_prompt = (
+            "Answer the user question using ONLY the provided context. "
+            "If the information is missing, state that you don't know.\n\n"
+        )
+        instruction_tokens = count_tokens(instruction_prompt)
+        query_prompt = f"\n\n### QUESTION:\n{query}\n\n### ANSWER:"
+        query_tokens = count_tokens(query_prompt)
+        
+        mem_tokens = count_tokens(memory_text)
+        doc_tokens = count_tokens(compressed_docs)
+        
+        # Total prompt token computation
+        total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
+        
+        overflow_occurred = False
+        overflow_steps = []
+        initial_tokens = total_prompt_tokens
+        
+        if total_prompt_tokens > context_limit:
+            overflow_occurred = True
+            overflow_steps.append(
+                f"🚨 OVERFLOW DETECTED: Prompt size ({total_prompt_tokens} tokens) "
+                f"exceeds target limit ({context_limit} tokens) by {total_prompt_tokens - context_limit} tokens."
+            )
+            
+            # Step 1: Memory Pruning
+            old_mem_tokens = mem_tokens
+            if total_prompt_tokens > context_limit and len(memory.entries) > 0:
+                overflow_steps.append("🧹 Phase 1: Pruning conversation memory turns...")
+                temp_entries = list(memory.entries)
+                pruned_count = 0
+                while len(temp_entries) > 1 and total_prompt_tokens > context_limit:
+                    removed = temp_entries.pop(0)
+                    pruned_count += 1
+                    # Recompute memory text and tokens
+                    temp_memory_text = "".join([f"[{e.role}]: {e.text}\n" for e in temp_entries])
+                    temp_mem_tokens = count_tokens(temp_memory_text)
+                    total_prompt_tokens = instruction_tokens + temp_mem_tokens + doc_tokens + query_tokens + 15
+                
+                # Apply changes
+                if pruned_count > 0:
+                    memory.entries = temp_entries
+                    memory_text = memory.get_active_context()
+                    mem_tokens = count_tokens(memory_text)
+                    overflow_steps.append(f"   - Evicted {pruned_count} oldest conversational turns. Memory shrunk from {old_mem_tokens} to {mem_tokens} tokens.")
+                else:
+                    overflow_steps.append("   - No historical memory turns available for eviction.")
+            
+            # Step 2: Aggressive Knowledge Compression
+            old_doc_tokens = doc_tokens
+            if total_prompt_tokens > context_limit and doc_tokens > 10:
+                overflow_steps.append("🗜️ Phase 2: Aggressive Knowledge Compression...")
+                # Calculate new budget for knowledge to squeeze inside limit
+                allowed_doc_budget = context_limit - instruction_tokens - mem_tokens - query_tokens - 25
+                allowed_doc_budget = max(20, allowed_doc_budget)
+                
+                # Re-run compressor with smaller budget
+                raw_texts = [r["text"] for r in all_raw]
+                compressed_docs = self.compressor.compress(raw_texts, query, max_tokens=allowed_doc_budget)
+                
+                # Format with source XML tags
+                compressed_segments = compressed_docs.split("\n\n")
+                formatted_parts = []
+                for seg in compressed_segments:
+                    seg_strip = seg.strip()
+                    if not seg_strip:
+                        continue
+                    source = "unknown"
+                    for r in all_raw:
+                        if seg_strip in r["text"]:
+                            source = r.get("source", "unknown")
+                            break
+                    formatted_parts.append(f'<document source="{source}">\n{seg_strip}\n</document>')
+                
+                compressed_docs = "\n\n".join(formatted_parts)
+                doc_tokens = count_tokens(compressed_docs)
+                total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
+                overflow_steps.append(f"   - Re-compressed knowledge source from {old_doc_tokens} to {doc_tokens} tokens (Target budget: {allowed_doc_budget}).")
+            
+            # Step 3: Hard Truncation / Eviction
+            if total_prompt_tokens > context_limit:
+                overflow_steps.append("✂️ Phase 3: Hard Truncation of prompt payload...")
+                allowed_doc_budget = context_limit - instruction_tokens - mem_tokens - query_tokens - 25
+                allowed_doc_budget = max(5, allowed_doc_budget)
+                
+                # Convert final_knowledge back to tokens, truncate, and decode
+                doc_tkn_list = tokenizer.encode(compressed_docs)
+                truncated_list = doc_tkn_list[:allowed_doc_budget]
+                compressed_docs = tokenizer.decode(truncated_list)
+                
+                doc_tokens = count_tokens(compressed_docs)
+                total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
+                overflow_steps.append(f"   - Hard truncated remaining context from {old_doc_tokens} to {doc_tokens} tokens.")
+            
+            # Rebuild final context
+            final_context = f"### MEMORY\n{memory_text}\n\n### KNOWLEDGE\n{compressed_docs}"
+            overflow_steps.append(f"✅ RECOVERY COMPLETE: Prompt size is now {total_prompt_tokens} tokens (under {context_limit} limit).")
+        
+        return final_context, memory_text, compressed_docs, overflow_occurred, overflow_steps, initial_tokens, total_prompt_tokens, mem_tokens, doc_tokens
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def ask(self, query: str, session_id: str = "default", mode: str = "context_engine",
-            source_filter: str = None, top_k: int = 5) -> Dict:
+            source_filter: str = None, top_k: int = 5, context_limit: Optional[int] = None) -> Dict:
         """
         The primary entry point for querying the RAG system.
         """
-        logger.info(f"\n[INIT] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode}")
+        logger.info(f"\n[INIT] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode} | Limit: {context_limit}")
         self.stats["queries"] += 1
         memory = self.get_memory(session_id)
         latencies = {}
@@ -302,11 +415,40 @@ class RAGContextEngine:
          mem_tokens, doc_tokens, doc_budget, peak_score) = self._phase_refine(
             query, mode, memory, all_raw, top_k, latencies
         )
+
+        # Apply overflow handling
+        overflow_occurred = False
+        overflow_steps = []
+        initial_tokens = mem_tokens + doc_tokens + 350
+        final_prompt_tokens = initial_tokens
+        if context_limit:
+            (final_context, memory_text, compressed_docs, overflow_occurred, overflow_steps,
+             initial_tokens, final_prompt_tokens, mem_tokens, doc_tokens) = self._handle_context_overflow(
+                query, final_context, memory_text, compressed_docs, memory, all_raw, context_limit
+            )
+
         response, prompt, exact_tokens, ctx_used_pct = self._phase_generate(query, final_context, latencies)
 
         # Persist interaction
         self.save_memory(session_id, query, "user")
-        self.save_memory(session_id, response, "assistant", 0.8)
+        
+        telemetry_data = {
+            "query": query,
+            "raw_prompt": f"### CONTEXT:\n{final_context}\n\n### QUESTION:\n{query}\n\n### ANSWER:",
+            "overflow_occurred": overflow_occurred,
+            "limit": context_limit,
+            "initial_tokens": initial_tokens,
+            "final_tokens": final_prompt_tokens,
+            "steps": overflow_steps,
+            "budget_tracking": {
+                "memory_tokens_used": mem_tokens,
+                "memory_tokens_limit": MEMORY_TOKEN_BUDGET,
+                "document_tokens_used": doc_tokens,
+                "document_tokens_limit": doc_budget
+            },
+            "compression_ratio": round(ratio, 3)
+        }
+        self.save_memory(session_id, response, "assistant", 0.8, telemetry=telemetry_data)
 
         # Compute telemetry
         total_ms = round((time.time() - t_start) * 1000, 2)
@@ -349,6 +491,13 @@ class RAGContextEngine:
                     "document_tokens_used": doc_tokens,
                     "document_tokens_limit": doc_budget
                 },
+                "overflow_telemetry": {
+                    "overflow_occurred": overflow_occurred,
+                    "limit": context_limit,
+                    "initial_tokens": initial_tokens,
+                    "final_tokens": final_prompt_tokens,
+                    "steps": overflow_steps
+                },
                 "mode": mode,
                 "alpha": getattr(self.retriever, "alpha", 0.5),
                 "reranker_peak_score": round(peak_score, 4)
@@ -383,17 +532,17 @@ class RAGContextEngine:
         latencies['phase_6_generation_ms'] = round((time.time() - t) * 1000, 2)
 
     def ask_stream(self, query: str, session_id: str = "default", mode: str = "context_engine",
-                   source_filter: str = None, top_k: int = 5) -> Generator[Dict, None, None]:
+                   source_filter: str = None, top_k: int = 5, context_limit: Optional[int] = None) -> Generator[Dict, None, None]:
         """
         Streaming query endpoint. Yields progress updates and LLM output tokens.
         """
         from typing import Dict as TypedDict
         if mode == "agentic":
             # Delegate entirely to the agent's ReAct loop
-            yield from self.agent.run_stream(query, session_id, source_filter)
+            yield from self.agent.run_stream(query, session_id, source_filter, context_limit=context_limit)
             return
 
-        logger.info(f"\n[INIT STREAM] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode}")
+        logger.info(f"\n[INIT STREAM] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode} | Limit: {context_limit}")
         self.stats["queries"] += 1
         memory = self.get_memory(session_id)
         latencies = {}
@@ -422,6 +571,31 @@ class RAGContextEngine:
          mem_tokens, doc_tokens, doc_budget, peak_score) = self._phase_refine(
             query, mode, memory, all_raw, top_k, latencies
          )
+
+        # Apply overflow handling
+        overflow_occurred = False
+        overflow_steps = []
+        initial_tokens = mem_tokens + doc_tokens + 350
+        final_prompt_tokens = initial_tokens
+        
+        if context_limit:
+            (final_context, memory_text, compressed_docs, overflow_occurred, overflow_steps,
+             initial_tokens, final_prompt_tokens, mem_tokens, doc_tokens) = self._handle_context_overflow(
+                query, final_context, memory_text, compressed_docs, memory, all_raw, context_limit
+            )
+
+        if overflow_occurred:
+            yield {
+                "event": "overflow_detected",
+                "limit": context_limit,
+                "initial": initial_tokens,
+                "final": final_prompt_tokens,
+                "steps": overflow_steps
+            }
+            for step in overflow_steps:
+                yield {"event": "overflow_step", "text": step}
+                time.sleep(0.4)
+
         yield {"event": "observation", "output": f"Reranking score: {peak_score:.4f}. Context compressed down by {round((1-ratio)*100)}%."}
 
         # Step 6: Generation (yielding chunks)
@@ -436,7 +610,24 @@ class RAGContextEngine:
 
         # Persist interaction
         self.save_memory(session_id, query, "user")
-        self.save_memory(session_id, accumulated_response, "assistant", 0.8)
+        
+        telemetry_data = {
+            "query": query,
+            "raw_prompt": f"### CONTEXT:\n{final_context}\n\n### QUESTION:\n{query}\n\n### ANSWER:",
+            "overflow_occurred": overflow_occurred,
+            "limit": context_limit,
+            "initial_tokens": initial_tokens,
+            "final_tokens": final_prompt_tokens,
+            "steps": overflow_steps,
+            "budget_tracking": {
+                "memory_tokens_used": mem_tokens,
+                "memory_tokens_limit": MEMORY_TOKEN_BUDGET,
+                "document_tokens_used": doc_tokens,
+                "document_tokens_limit": doc_budget
+            },
+            "compression_ratio": round(ratio, 3)
+        }
+        self.save_memory(session_id, accumulated_response, "assistant", 0.8, telemetry=telemetry_data)
 
         total_ms = round((time.time() - t_start) * 1000, 2)
         latencies['total_execution_ms'] = total_ms
@@ -453,6 +644,21 @@ class RAGContextEngine:
             "avg_latency_ms": round(self.stats["avg_latency_ms"], 2),
             "cpu_usage_percent": psutil.cpu_percent(interval=None),
             "memory_usage_percent": psutil.virtual_memory().percent,
+            "overflow_telemetry": {
+                "overflow_occurred": overflow_occurred,
+                "limit": context_limit,
+                "initial_tokens": initial_tokens,
+                "final_tokens": final_prompt_tokens,
+                "steps": overflow_steps
+            },
+            "budget_tracking": {
+                "memory_tokens_used": mem_tokens,
+                "memory_tokens_limit": MEMORY_TOKEN_BUDGET,
+                "document_tokens_used": doc_tokens,
+                "document_tokens_limit": doc_budget
+            },
+            "retrieved_context": all_raw[:top_k],
+            "raw_prompt": f"### CONTEXT:\n{final_context}\n\n### QUESTION:\n{query}\n\n### ANSWER:"
         }}
 
     def close(self):

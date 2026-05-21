@@ -64,11 +64,12 @@ class RAGAgent:
             return tool_name, tool_arg
         return None
 
-    def run_stream(self, query: str, session_id: str = "default", source_filter: Optional[str] = None) -> Generator[Dict, None, None]:
+    def run_stream(self, query: str, session_id: str = "default", source_filter: Optional[str] = None, context_limit: Optional[int] = None) -> Generator[Dict, None, None]:
         """
         Executes the ReAct loop and yields intermediate events for streaming.
         """
-        logger.info(f"Agent starting for query: {query[:50]}...")
+        import time
+        logger.info(f"Agent starting for query: {query[:50]}... | Limit: {context_limit}")
         memory = self.engine.get_memory(session_id)
         memory_text = memory.get_active_context()
 
@@ -84,6 +85,58 @@ class RAGAgent:
             self.engine.save_memory(session_id, direct_reply, "assistant", 0.5)
             yield {"event": "done", "response": direct_reply, "stats": {}}
             return
+
+        # Perform overflow detection on the Agent prompt (system prompt + memory + user query)
+        overflow_occurred = False
+        overflow_steps = []
+        agent_prompt_tokens = count_tokens(SYSTEM_PROMPT) + count_tokens(memory_text) + count_tokens(query) + 50
+        initial_tokens = agent_prompt_tokens
+
+        if context_limit and agent_prompt_tokens > context_limit:
+            overflow_occurred = True
+            overflow_steps.append(
+                f"🚨 [AGENT] OVERFLOW DETECTED: Agent prompt size ({agent_prompt_tokens} tokens) "
+                f"exceeds limit ({context_limit} tokens) by {agent_prompt_tokens - context_limit} tokens."
+            )
+            # Prune memory
+            old_mem = count_tokens(memory_text)
+            temp_entries = list(memory.entries)
+            pruned_count = 0
+            while len(temp_entries) > 1 and agent_prompt_tokens > context_limit:
+                removed = temp_entries.pop(0)
+                pruned_count += 1
+                temp_mem_text = "".join([f"[{e.role}]: {e.text}\n" for e in temp_entries])
+                agent_prompt_tokens = count_tokens(SYSTEM_PROMPT) + count_tokens(temp_mem_text) + count_tokens(query) + 50
+            
+            if pruned_count > 0:
+                memory.entries = temp_entries
+                memory_text = memory.get_active_context()
+                new_mem = count_tokens(memory_text)
+                overflow_steps.append(f"   - Evicted {pruned_count} oldest conversational turns. Memory reduced from {old_mem} to {new_mem} tokens.")
+            else:
+                overflow_steps.append("   - No memory turns available for eviction.")
+                
+            # If still overflowing, truncate user query
+            if agent_prompt_tokens > context_limit:
+                allowed_query_len = context_limit - count_tokens(SYSTEM_PROMPT) - count_tokens(memory_text) - 60
+                allowed_query_len = max(5, allowed_query_len)
+                query_tokens = tokenizer.encode(query)
+                query = tokenizer.decode(query_tokens[:allowed_query_len])
+                agent_prompt_tokens = count_tokens(SYSTEM_PROMPT) + count_tokens(memory_text) + count_tokens(query) + 50
+                overflow_steps.append(f"   - Hard truncated user query to {count_tokens(query)} tokens.")
+                
+            overflow_steps.append(f"✅ [AGENT] RECOVERY COMPLETE: Agent context size is now {agent_prompt_tokens} tokens.")
+            
+            yield {
+                "event": "overflow_detected",
+                "limit": context_limit,
+                "initial": initial_tokens,
+                "final": agent_prompt_tokens,
+                "steps": overflow_steps
+            }
+            for step in overflow_steps:
+                yield {"event": "overflow_step", "text": step}
+                time.sleep(0.4)
 
         # Initialize scratchpad
         scratchpad = ""
@@ -285,10 +338,35 @@ class RAGAgent:
 
         # Persist memory
         self.engine.save_memory(session_id, query, "user")
-        self.engine.save_memory(session_id, final_response, "assistant", 0.8)
+        
+        telemetry_data = {
+            "query": query,
+            "raw_prompt": f"SYSTEM_PROMPT:\n{SYSTEM_PROMPT}\n\nUSER_MESSAGE:\nActive Conversation History:\n{memory_text}\n\nUser Question: {query}",
+            "overflow_occurred": overflow_occurred,
+            "limit": context_limit,
+            "initial_tokens": initial_tokens,
+            "final_tokens": agent_prompt_tokens,
+            "steps": overflow_steps,
+            "budget_tracking": {
+                "memory_tokens_used": count_tokens(memory_text),
+                "memory_tokens_limit": 1500,
+                "document_tokens_used": 0,
+                "document_tokens_limit": 0
+            },
+            "compression_ratio": 1.0
+        }
+        self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
 
         yield {"event": "done", "response": final_response, "stats": {
             "queries_handled": self.engine.stats["queries"],
             "cpu_usage_percent": psutil.cpu_percent(interval=None),
             "memory_usage_percent": psutil.virtual_memory().percent,
+            "raw_prompt": f"SYSTEM_PROMPT:\n{SYSTEM_PROMPT}\n\nUSER_MESSAGE:\nActive Conversation History:\n{memory_text}\n\nUser Question: {query}",
+            "overflow_telemetry": {
+                "overflow_occurred": overflow_occurred,
+                "limit": context_limit,
+                "initial_tokens": initial_tokens,
+                "final_tokens": agent_prompt_tokens,
+                "steps": overflow_steps
+            }
         }}

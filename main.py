@@ -124,6 +124,7 @@ class QueryRequest(BaseModel):
     session_id: str = "default"
     mode: Literal["context_engine", "normal", "agentic"] = "context_engine"
     source_filter: Optional[str] = None
+    context_limit: Optional[int] = None
 
 
 # ------------------------------------------------------------------
@@ -152,7 +153,8 @@ async def query_rag(request: QueryRequest):
             request.question,
             session_id=request.session_id,
             mode=request.mode,
-            source_filter=request.source_filter
+            source_filter=request.source_filter,
+            context_limit=request.context_limit
         )
         return result
     except Exception as e:
@@ -182,7 +184,8 @@ async def query_rag_stream(request: QueryRequest):
                         request.question,
                         session_id=request.session_id,
                         mode=request.mode,
-                        source_filter=request.source_filter
+                        source_filter=request.source_filter,
+                        context_limit=request.context_limit
                     ):
                         loop.call_soon_threadsafe(queue.put_nowait, event)
                     loop.call_soon_threadsafe(queue.put_nowait, None)
