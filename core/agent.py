@@ -184,45 +184,49 @@ class RAGAgent:
 
                 # Execute Tool
                 observation = ""
-                if tool_name == "search_knowledge_base":
-                    # Check cache first
-                    if tool_arg in search_cache:
-                        logger.info(f"Search cache hit for: {tool_arg}")
-                        observation = search_cache[tool_arg]
+                try:
+                    if tool_name == "search_knowledge_base":
+                        # Check cache first
+                        if tool_arg in search_cache:
+                            logger.info(f"Search cache hit for: {tool_arg}")
+                            observation = search_cache[tool_arg]
+                        else:
+                            logger.info(f"Executing search_knowledge_base for: {tool_arg}")
+                            # Re-use engine's retrieve/refine steps for efficiency
+                            search_queries = self.engine._phase_expand(tool_arg, "context_engine", {})
+                            raw_results = self.engine._phase_retrieve(search_queries, 5, source_filter, {})
+                            
+                            # Compress with remaining budget
+                            mem_tokens = count_tokens(memory_text)
+                            doc_budget = max(300, 1500 - mem_tokens)
+                            compressed = self.engine.compressor.compress(
+                                [r["text"] for r in raw_results], tool_arg, max_tokens=doc_budget
+                            )
+                            observation = compressed if compressed.strip() else "No matching documents found in database."
+                            search_cache[tool_arg] = observation
+
+                    elif tool_name == "get_system_stats":
+                        logger.info("Executing get_system_stats")
+                        doc_count = self.engine.retriever.get_count()
+                        cpu = psutil.cpu_percent(interval=None)
+                        ram = psutil.virtual_memory().percent
+                        observation = f"System Stats: CPU={cpu}%, RAM={ram}%, Total Indexed Documents={doc_count}"
+
+                    elif tool_name == "direct_response":
+                        logger.info("Executing direct_response tool")
+                        observation = f"Direct Response Executed: '{tool_arg}'"
+                        # Force break and set as final response
+                        final_response = tool_arg
+                        yield {"event": "thought", "text": f"Direct response decided: {tool_arg}"}
+                        break
                     else:
-                        logger.info(f"Executing search_knowledge_base for: {tool_arg}")
-                        # Re-use engine's retrieve/refine steps for efficiency
-                        search_queries = self.engine._phase_expand(tool_arg, "context_engine", {})
-                        raw_results = self.engine._phase_retrieve(search_queries, 5, source_filter, {})
-                        
-                        # Compress with remaining budget
-                        mem_tokens = count_tokens(memory_text)
-                        doc_budget = max(300, 1500 - mem_tokens)
-                        compressed = self.engine.compressor.compress(
-                            [r["text"] for r in raw_results], tool_arg, max_tokens=doc_budget
+                        observation = (
+                            f"Error: Unknown tool '{tool_name}'. "
+                            "Available tools are: search_knowledge_base[query], get_system_stats[], or direct_response[response]."
                         )
-                        observation = compressed if compressed.strip() else "No matching documents found in database."
-                        search_cache[tool_arg] = observation
-
-                elif tool_name == "get_system_stats":
-                    logger.info("Executing get_system_stats")
-                    doc_count = self.engine.retriever.get_count()
-                    cpu = psutil.cpu_percent(interval=None)
-                    ram = psutil.virtual_memory().percent
-                    observation = f"System Stats: CPU={cpu}%, RAM={ram}%, Total Indexed Documents={doc_count}"
-
-                elif tool_name == "direct_response":
-                    logger.info("Executing direct_response tool")
-                    observation = f"Direct Response Executed: '{tool_arg}'"
-                    # Force break and set as final response
-                    final_response = tool_arg
-                    yield {"event": "thought", "text": f"Direct response decided: {tool_arg}"}
-                    break
-                else:
-                    observation = (
-                        f"Error: Unknown tool '{tool_name}'. "
-                        "Available tools are: search_knowledge_base[query], get_system_stats[], or direct_response[response]."
-                    )
+                except Exception as tool_err:
+                    logger.error(f"Agent tool execution error for '{tool_name}': {tool_err}", exc_info=True)
+                    observation = f"Error executing tool '{tool_name}': {type(tool_err).__name__}: {tool_err}"
 
                 yield {"event": "observation", "output": observation}
                 scratchpad += f"\nThought: {thought_text}\nAction: {tool_name}[{tool_arg}]\nObservation: {observation}"
