@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG CONTROL CONSOLE</title>
+    <meta name="description" content="RAG Context Engine — Neural Retrieval-Augmented Generation Dashboard">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header>
+        <div class="sys-title">RAG CONTROL CONSOLE</div>
+        <div class="status-strip">
+            <span>DB_STATUS: ONLINE</span>
+            <span>DATA_UNITS: <span id="knowledge-count">0</span></span>
+            <span id="session-tag">SID: ...</span>
+        </div>
+    </header>
+
+    <div class="main-grid">
+        <!-- LEFT PANEL -->
+        <div style="display: flex; flex-direction: column; gap: 1px; min-height: 0;">
+            <div class="box" style="flex: 1;">
+                <div class="section-label">PROCESS_LOGS</div>
+                <div id="log-window" class="log-container"></div>
+            </div>
+            <div class="box" style="flex: 1;">
+                <div class="section-label">GLASS_BOX_INSPECTOR</div>
+                <div id="inspector-window" class="log-container" style="color: var(--accent); font-family: var(--font-mono);">Awaiting execution...</div>
+            </div>
+        </div>
+
+        <!-- CHAT -->
+        <div class="box chat-container">
+            <div class="section-label">INTERACTION_THREAD</div>
+            <div id="chat-window"></div>
+            <form id="comm-form" class="input-bar">
+                <input type="text" id="comm-input" placeholder="Query input..." required autofocus autocomplete="off">
+                <button type="submit" id="comm-btn">EXECUTE</button>
+            </form>
+        </div>
+
+        <!-- TELEMETRY & CONTEXT -->
+        <div class="sidebar-right">
+            <div class="box">
+                <div class="section-label">PERFORMANCE_METRICS</div>
+                <div class="stats-panel">
+                    <div class="stat-box"><span id="stat-q" class="stat-val">0</span><span class="stat-key">TOTAL_QUERIES</span></div>
+                    <div class="stat-box"><span id="stat-c" class="stat-val">0%</span><span class="stat-key">CONTEXT_REDUCTION</span></div>
+                    <div class="stat-box"><span id="stat-t" class="stat-val">0ms</span><span class="stat-key">ROUND_TRIP</span></div>
+                    <div class="stat-box"><span id="stat-m" class="stat-val">0</span><span class="stat-key">ACTIVE_THREAD_MEM</span></div>
+                    <div class="stat-box"><span id="stat-cpu" class="stat-val">0%</span><span class="stat-key">HOST_CPU</span></div>
+                    <div class="stat-box"><span id="stat-ram" class="stat-val">0%</span><span class="stat-key">HOST_RAM</span></div>
+                    <div class="stat-box"><span id="stat-ctx" class="stat-val">0%</span><span class="stat-key">PROMPT_WINDOW</span></div>
+                    <div class="stat-box"><span id="stat-tps" class="stat-val">0 t/s</span><span class="stat-key">LLM_SPEED</span></div>
+                    <div class="stat-box"><span id="stat-cost" class="stat-val">$0.00</span><span class="stat-key">EST_COST</span></div>
+                </div>
+            </div>
+
+            <div class="box mode-selector">
+                <div class="section-label" style="border: none; padding: 0; margin-bottom: 0.8rem;">PROCESSING_MODE</div>
+                <div class="mode-grid">
+                    <label class="mode-btn">
+                        <input type="radio" name="engine-mode" value="context_engine" checked style="display: none;">
+                        <div class="mode-label">ADVANCED_PIPELINE</div>
+                    </label>
+                    <label class="mode-btn">
+                        <input type="radio" name="engine-mode" value="normal" style="display: none;">
+                        <div class="mode-label">SIMPLE_RAG</div>
+                    </label>
+                </div>
+            </div>
+
+            <div class="box data-panel">
+                <div class="section-label">SOURCE_CONTEXT_DUMP</div>
+                <div id="recon-window" class="readout-list"></div>
+            </div>
+
+            <div class="box" style="padding: 0.8rem;">
+                <div id="drop-area" class="upload-area">INJECT_DOCUMENT</div>
+                <input type="file" id="file-in" style="display: none;">
+                <div id="up-msg" style="font-size: 0.6rem; text-align: center; margin-top: 0.5rem; color: var(--accent); display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

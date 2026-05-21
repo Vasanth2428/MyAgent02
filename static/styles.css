@@ -1,0 +1,209 @@
+/* ================================================================
+   RAG CONTROL CONSOLE — Design System
+   ================================================================ */
+
+:root {
+    --bg: #000000;
+    --surface: #0a0a0a;
+    --border: #1a1a1a;
+    --border-active: #333333;
+    --text-primary: #ffffff;
+    --text-secondary: #aaaaaa;
+    --text-dim: #555555;
+    --accent: #007bff;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-sans: 'Inter', sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: var(--font-mono);
+    background: var(--bg);
+    color: var(--text-primary);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ---- Header ---- */
+header {
+    padding: 0.8rem 1.2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+}
+
+.sys-title { font-weight: 700; font-size: 0.9rem; letter-spacing: 0.05em; }
+
+.status-strip {
+    display: flex;
+    gap: 1.5rem;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+/* ---- Grid Layout ---- */
+.main-grid {
+    display: grid;
+    grid-template-columns: 300px 1fr 350px;
+    gap: 1px;
+    background: var(--border);
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.box {
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.section-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.6rem 0.8rem;
+    background: #111;
+    border-bottom: 1px solid var(--border);
+    text-transform: uppercase;
+    color: #ffffff;
+    letter-spacing: 0.08em;
+}
+
+/* ---- Logs ---- */
+.log-container {
+    flex-grow: 1;
+    padding: 0.8rem;
+    overflow-y: auto;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    background: var(--bg);
+}
+
+.log-entry { margin-bottom: 0.4rem; border-left: 2px solid var(--border); padding-left: 0.5rem; }
+.log-time { color: var(--text-dim); margin-right: 0.5rem; }
+.log-type { font-weight: 700; font-size: 0.65rem; margin-right: 0.5rem; color: var(--text-dim); }
+
+/* ---- Chat ---- */
+.chat-container { display: flex; flex-direction: column; background: var(--bg); }
+
+#chat-window {
+    flex-grow: 1;
+    padding: 1.5rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.message {
+    max-width: 85%;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    font-size: 0.85rem;
+    line-height: 1.6;
+}
+
+.msg-user { align-self: flex-end; background: #0c0c0c; border-color: var(--border-active); }
+.msg-ai   { align-self: flex-start; background: #050505; border-color: var(--border); }
+.msg-header {
+    font-size: 0.6rem; color: var(--text-dim); margin-bottom: 0.6rem;
+    text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem;
+}
+
+/* ---- Input Bar ---- */
+.input-bar {
+    padding: 1rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 0.5rem;
+    background: var(--surface);
+}
+
+input {
+    flex-grow: 1;
+    background: #000;
+    border: 1px solid var(--border);
+    padding: 0.8rem;
+    color: #fff;
+    outline: none;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+}
+input:focus { border-color: var(--accent); }
+
+button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 0 1.5rem;
+    font-weight: 700;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+button:disabled { opacity: 0.3; cursor: default; }
+
+/* ---- Right Sidebar ---- */
+.sidebar-right { display: flex; flex-direction: column; gap: 1px; background: var(--border); min-height: 0; }
+.sidebar-right > .box { flex: none; }
+.data-panel { flex-grow: 1 !important; }
+
+.readout-list { padding: 0.8rem; overflow-y: auto; }
+.readout-item {
+    font-size: 0.7rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+    background: var(--bg);
+}
+
+/* ---- Stats Grid ---- */
+.stats-panel { padding: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.stat-box { border-left: 1.5px solid var(--accent); padding-left: 0.6rem; }
+.stat-val { font-size: 1.15rem; font-weight: 700; color: #ffffff; display: block; }
+.stat-key { font-size: 0.6rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-top: 0.2rem; }
+
+/* ---- Mode Selector ---- */
+.mode-selector { padding: 1rem; }
+.mode-grid { display: flex; gap: 0.5rem; }
+.mode-btn { cursor: pointer; flex: 1; }
+.mode-label {
+    font-size: 0.6rem;
+    padding: 0.6rem;
+    text-align: center;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    background: var(--bg);
+}
+.mode-btn input:checked + .mode-label {
+    border-color: var(--accent);
+    color: #fff;
+    background: rgba(0, 123, 255, 0.05);
+}
+
+/* ---- Upload ---- */
+.upload-area {
+    padding: 1rem;
+    text-align: center;
+    border: 1px dashed var(--border);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border-active); }
+
+/* ---- Markdown in Chat ---- */
+.msg-body p { margin-bottom: 0.8rem; }
+.msg-body ul, .msg-body ol { margin-left: 1.2rem; margin-bottom: 0.8rem; }
+.msg-body pre { background: #000; padding: 1rem; border: 1px solid var(--border); overflow-x: auto; margin-bottom: 1rem; font-size: 0.75rem; }
+.msg-body code { background: #1a1a1a; padding: 0.1rem 0.3rem; border-radius: 2px; }
