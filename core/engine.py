@@ -16,7 +16,7 @@ import os
 import logging
 import time
 import psutil
-from typing import Dict
+from typing import Dict, Generator
 import tiktoken
 from core.llm import LLMService
 
@@ -68,6 +68,10 @@ class RAGContextEngine:
         self.client = self.llm_service.raw_client  # backward compat for generation
         self.expander = QueryExpander(self.client)
         self.hyde = HyDEGenerator(self.client)
+
+        # Initialize ReAct Agent
+        from core.agent import RAGAgent
+        self.agent = RAGAgent(self)
 
     # ------------------------------------------------------------------
     # Memory helpers
@@ -350,6 +354,106 @@ class RAGContextEngine:
                 "reranker_peak_score": round(peak_score, 4)
             }
         }
+
+    def _phase_generate_stream(self, query: str, final_context: str, latencies: dict) -> Generator[Dict, None, None]:
+        """Phase 6: LLM Generation (Streaming)."""
+        t = time.time()
+        logger.info("[P6: GENERATION] Sending to Groq (Streaming)...")
+        prompt = (
+            "Answer the user question using ONLY the provided context. "
+            "If the information is missing, state that you don't know.\n\n"
+            f"### CONTEXT:\n{final_context}\n\n"
+            f"### QUESTION:\n{query}\n\n"
+            "### ANSWER:"
+        )
+        try:
+            stream = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=LLM_TEMPERATURE,
+                stream=True
+            )
+            for chunk in stream:
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield {"event": "answer_chunk", "text": content}
+        except Exception as e:
+            logger.error(f"LLM Stream Error: {e}")
+            yield {"event": "answer_chunk", "text": f"\n[LLM Error: {e}]"}
+        latencies['phase_6_generation_ms'] = round((time.time() - t) * 1000, 2)
+
+    def ask_stream(self, query: str, session_id: str = "default", mode: str = "context_engine",
+                   source_filter: str = None, top_k: int = 5) -> Generator[Dict, None, None]:
+        """
+        Streaming query endpoint. Yields progress updates and LLM output tokens.
+        """
+        from typing import Dict as TypedDict
+        if mode == "agentic":
+            # Delegate entirely to the agent's ReAct loop
+            yield from self.agent.run_stream(query, session_id, source_filter)
+            return
+
+        logger.info(f"\n[INIT STREAM] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode}")
+        self.stats["queries"] += 1
+        memory = self.get_memory(session_id)
+        latencies = {}
+        t_start = time.time()
+
+        # Step 1: Expand
+        yield {"event": "thought", "text": "Analyzing query and generating semantic search variations..."}
+        search_queries = self._phase_expand(query, mode, latencies)
+        yield {"event": "action", "tool": "Query Expansion", "input": f"Variations: {search_queries}"}
+
+        # Step 1.5: HyDE
+        hyde_doc = ""
+        if mode == "context_engine":
+            yield {"event": "thought", "text": "Generating hypothetical document response (HyDE) to capture latent semantics..."}
+            hyde_doc = self._phase_hyde(query, mode, search_queries, latencies)
+            yield {"event": "observation", "output": f"HyDE generated (~{len(hyde_doc)} chars)"}
+
+        # Step 2: Retrieve
+        yield {"event": "thought", "text": "Retrieving contextually relevant documents from Vector Database..."}
+        all_raw = self._phase_retrieve(search_queries, top_k, source_filter, latencies)
+        yield {"event": "observation", "output": f"Retrieved {len(all_raw)} document chunks."}
+
+        # Step 3-5: Refine (Reranking, Memory Sync, Compression)
+        yield {"event": "thought", "text": "Reranking document candidates and performing dynamic memory decay budget sizing..."}
+        (final_context, memory_text, compressed_docs, ratio,
+         mem_tokens, doc_tokens, doc_budget, peak_score) = self._phase_refine(
+            query, mode, memory, all_raw, top_k, latencies
+         )
+        yield {"event": "observation", "output": f"Reranking score: {peak_score:.4f}. Context compressed down by {round((1-ratio)*100)}%."}
+
+        # Step 6: Generation (yielding chunks)
+        yield {"event": "thought", "text": "Generating final grounded answer from compressed context..."}
+        
+        # Save placeholder history (will be updated when final response is completed)
+        accumulated_response = ""
+        for chunk in self._phase_generate_stream(query, final_context, latencies):
+            if chunk["event"] == "answer_chunk":
+                accumulated_response += chunk["text"]
+            yield chunk
+
+        # Persist interaction
+        self.save_memory(session_id, query, "user")
+        self.save_memory(session_id, accumulated_response, "assistant", 0.8)
+
+        total_ms = round((time.time() - t_start) * 1000, 2)
+        latencies['total_execution_ms'] = total_ms
+        self.stats["avg_latency_ms"] = (
+            self.stats["avg_latency_ms"] * (self.stats["queries"] - 1) + total_ms
+        ) / self.stats["queries"]
+
+        yield {"event": "done", "response": accumulated_response, "stats": {
+            "compression_ratio": round(ratio, 3),
+            "avg_compression_ratio": round(self.stats["avg_compression_ratio"], 3),
+            "queries_handled": self.stats["queries"],
+            "active_memories": len(memory.entries),
+            "instantaneous_latency_ms": latencies,
+            "avg_latency_ms": round(self.stats["avg_latency_ms"], 2),
+            "cpu_usage_percent": psutil.cpu_percent(interval=None),
+            "memory_usage_percent": psutil.virtual_memory().percent,
+        }}
 
     def close(self):
         """Cleanup resources."""

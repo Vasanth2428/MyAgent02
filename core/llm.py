@@ -1,23 +1,46 @@
-"""
-================================================================================
-RAG CONTEXT ENGINE - CENTRALIZED LLM SERVICE
-================================================================================
-Single point of contact for all LLM interactions. All modules (Engine, Expander,
-HyDE) use this service instead of creating their own Groq clients.
-
-To switch providers (e.g., from Groq to OpenAI, Ollama, or Claude), modify
-ONLY this file.
-"""
-
 import os
+import time
+import random
 import logging
 from typing import Optional, List, Dict
-
+import groq
 from groq import Groq
 
 from core.config import LLM_MODEL, LLM_TEMPERATURE
 
 logger = logging.getLogger("RAG.LLM")
+
+
+class RobustLLMClient:
+    def __init__(self, raw_client, llm_service):
+        self.raw_client = raw_client
+        self.llm_service = llm_service
+        self.chat = RobustChat(raw_client.chat, llm_service)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_client, name)
+
+
+class RobustChat:
+    def __init__(self, raw_chat, llm_service):
+        self.raw_chat = raw_chat
+        self.llm_service = llm_service
+        self.completions = RobustCompletions(raw_chat.completions, llm_service)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_chat, name)
+
+
+class RobustCompletions:
+    def __init__(self, raw_completions, llm_service):
+        self.raw_completions = raw_completions
+        self.llm_service = llm_service
+
+    def create(self, *args, **kwargs):
+        return self.llm_service.execute_with_retry(self.raw_completions.create, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_completions, name)
 
 
 class LLMService:
@@ -31,8 +54,50 @@ class LLMService:
         if not self.api_key:
             raise ValueError("GROQ_API_KEY environment variable missing")
         self.model = model or LLM_MODEL
-        self.client = Groq(api_key=self.api_key)
+        raw = Groq(api_key=self.api_key)
+        self.client = RobustLLMClient(raw, self)
         logger.info(f"LLMService initialized with model: {self.model}")
+
+    def execute_with_retry(self, func, *args, **kwargs):
+        """
+        Executes a client call with exponential backoff and jitter retry logic.
+        Catches RateLimitError, APIConnectionError, InternalServerError, and APITimeoutError.
+        """
+        max_retries = 5
+        base_delay = 1.0  # seconds
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except (groq.RateLimitError, groq.APIConnectionError, groq.InternalServerError, groq.APITimeoutError) as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"LLM call failed after {max_retries} attempts: {e}")
+                    raise
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    f"LLM call encountered retriable error: {e}. "
+                    f"Retrying in {delay:.2f}s (Attempt {attempt+1}/{max_retries})...."
+                )
+                time.sleep(delay)
+            except Exception as e:
+                # Catch general API status errors that represent 429 (Rate Limit) or 5xx (Server Error)
+                is_retriable = False
+                if hasattr(e, "status_code"):
+                    if e.status_code == 429 or (e.status_code and e.status_code >= 500):
+                        is_retriable = True
+                
+                if is_retriable:
+                    if attempt == max_retries - 1:
+                        logger.error(f"LLM call failed after {max_retries} attempts: {e}")
+                        raise
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(
+                        f"LLM call encountered status code error ({e.status_code}): {e}. "
+                        f"Retrying in {delay:.2f}s (Attempt {attempt+1}/{max_retries})...."
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"LLM call encountered non-retriable error: {type(e).__name__}: {e}")
+                    raise
 
     def complete(
         self,

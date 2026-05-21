@@ -101,6 +101,28 @@ function renderInspector(data) {
     `;
 }
 
+// ---- Session / Thread Abort Controller ----
+let abortController = null;
+const stopBtn = document.getElementById('stop-btn');
+
+if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+        if (abortController) {
+            abortController.abort();
+            addLog("Execution interrupted by user.", "CANCEL");
+            
+            // Find typing bubbles and mark interrupted
+            const cursorBubble = document.querySelector('.typing-cursor');
+            if (cursorBubble) {
+                cursorBubble.classList.remove('typing-cursor');
+                cursorBubble.innerHTML += "<br><span style='color: #ff9900; font-size: 0.75rem; font-weight: bold;'>[EXECUTION INTERRUPTED]</span>";
+            }
+            btn.disabled = false;
+            stopBtn.style.display = 'none';
+        }
+    });
+}
+
 // ---- Query Submission ----
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -110,16 +132,34 @@ form.addEventListener('submit', async (e) => {
     input.value = '';
     addMsg(query, 'user');
     const mode = document.querySelector('input[name="engine-mode"]:checked').value;
-    addLog(`Query received: ${mode}`, 'REQUEST');
+    addLog(`Query received (Mode: ${mode})`, 'REQUEST');
 
     btn.disabled = true;
+    if (stopBtn) stopBtn.style.display = 'inline-block';
+    
+    // Clear dynamic readout panels
+    reconWindow.innerHTML = '';
+    inspectorWindow.innerHTML = '<div style="color: var(--text-dim);">Awaiting telemetry stream...</div>';
+
+    abortController = new AbortController();
     const startTime = Date.now();
 
+    // Create the AI chat bubble ahead of time for streaming
+    const aiBubble = document.createElement('div');
+    aiBubble.className = 'message msg-ai';
+    aiBubble.innerHTML = `<div class="msg-header">SYSTEM_OUTPUT</div><div class="msg-body typing-cursor"></div>`;
+    chatWindow.appendChild(aiBubble);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    const bodyContainer = aiBubble.querySelector('.msg-body');
+
+    let accumulatedText = "";
+
     try {
-        const response = await fetch(`${API_BASE}/query`, {
+        const response = await fetch(`${API_BASE}/query_stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question: query, session_id: sid, mode: mode })
+            body: JSON.stringify({ question: query, session_id: sid, mode: mode }),
+            signal: abortController.signal
         });
 
         if (!response.ok) {
@@ -127,51 +167,128 @@ form.addEventListener('submit', async (e) => {
             throw new Error(errData.detail || "Server Error");
         }
 
-        const data = await response.json();
-        const latency = Date.now() - startTime;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
 
-        addLog(`Processing complete: ${latency}ms`, 'SUCCESS');
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
 
-        if (data.response) {
-            addMsg(data.response, 'ai');
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            
+            // Save the last partial line back to the buffer
+            buffer = lines.pop();
 
-            // Source context
-            reconWindow.innerHTML = '';
-            if (data.retrieved_context) {
-                data.retrieved_context.forEach(hit => {
-                    const item = document.createElement('div');
-                    item.className = 'readout-item';
-                    item.innerHTML = `${hit.text.substring(0, 180)}...<br><div style="margin-top:0.4rem;font-size:0.55rem;color:var(--text-dim)">RELEVANCE: ${hit.score.toFixed(4)} | SOURCE: ${hit.source}</div>`;
-                    reconWindow.appendChild(item);
-                });
-            }
+            for (const line of lines) {
+                const cleanLine = line.trim();
+                if (!cleanLine.startsWith("data:")) continue;
 
-            // Stat panel
-            if (data.stats) {
-                statQ.textContent = data.stats.queries_handled;
-                statC.textContent = Math.round((1 - data.stats.compression_ratio) * 100) + '%';
-                statT.textContent = latency + 'ms';
-                statM.textContent = data.stats.active_memories || 0;
-                if (data.stats.cpu_usage_percent !== undefined)    statCpu.textContent = data.stats.cpu_usage_percent + '%';
-                if (data.stats.memory_usage_percent !== undefined) statRam.textContent = data.stats.memory_usage_percent + '%';
-                if (data.tps !== undefined)        statTps.textContent = data.tps + ' t/s';
-                if (data.query_cost !== undefined)  statCost.textContent = data.query_cost;
+                const jsonStr = cleanLine.substring(5).trim();
+                if (!jsonStr) continue;
 
-                if (data.stats.exact_tokens) {
-                    statCtx.textContent = data.stats.context_used_percent + '% (' + data.stats.exact_tokens.prompt + ' TKN)';
-                } else if (data.stats.context_used_percent !== undefined) {
-                    statCtx.textContent = data.stats.context_used_percent + '%';
+                let data;
+                try {
+                    data = JSON.parse(jsonStr);
+                } catch (parseErr) {
+                    console.error("Failed to parse SSE payload", jsonStr, parseErr);
+                    continue;
+                }
+
+                if (data.event === "thought") {
+                    addLog(data.text, "THOUGHT");
+                    
+                    const entry = document.createElement('div');
+                    entry.className = 'log-thought';
+                    entry.textContent = `💭 ${data.text}`;
+                    logWindow.appendChild(entry);
+                    logWindow.scrollTop = logWindow.scrollHeight;
+                } 
+                else if (data.event === "action") {
+                    addLog(`Executing: ${data.tool}(${data.input})`, "ACTION");
+                    
+                    const entry = document.createElement('div');
+                    entry.className = 'log-action';
+                    entry.textContent = `⚙️ Action: ${data.tool}[${data.input}]`;
+                    logWindow.appendChild(entry);
+                    logWindow.scrollTop = logWindow.scrollHeight;
+                }
+                else if (data.event === "observation") {
+                    addLog(`Observation received (${data.output.length} chars)`, "OBSERVATION");
+                    
+                    const entry = document.createElement('div');
+                    entry.className = 'log-observation';
+                    entry.textContent = `📄 Observation: ${data.output}`;
+                    logWindow.appendChild(entry);
+                    logWindow.scrollTop = logWindow.scrollHeight;
+                }
+                else if (data.event === "answer_chunk") {
+                    accumulatedText += data.text;
+                    try {
+                        bodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(accumulatedText) : accumulatedText;
+                    } catch (e) {
+                        bodyContainer.textContent = accumulatedText;
+                    }
+                    chatWindow.scrollTop = chatWindow.scrollHeight;
+                }
+                else if (data.event === "error") {
+                    throw new Error(data.message);
+                }
+                else if (data.event === "done") {
+                    const latency = Date.now() - startTime;
+                    addLog(`Processing complete: ${latency}ms`, 'SUCCESS');
+                    bodyContainer.classList.remove('typing-cursor');
+
+                    // If we got back any raw document context inside stats, populate it
+                    if (data.stats && data.stats.retrieved_context) {
+                        reconWindow.innerHTML = '';
+                        data.stats.retrieved_context.forEach(hit => {
+                            const item = document.createElement('div');
+                            item.className = 'readout-item';
+                            item.innerHTML = `${hit.text.substring(0, 180)}...<br><div style="margin-top:0.4rem;font-size:0.55rem;color:var(--text-dim)">RELEVANCE: ${hit.score.toFixed(4)} | SOURCE: ${hit.source}</div>`;
+                            reconWindow.appendChild(item);
+                        });
+                    }
+
+                    // Render telemetry and update inspector
+                    const finalData = {
+                        query: query,
+                        tps: data.stats?.tps || Math.round(accumulatedText.split(/\s+/).length / (latency / 1000)),
+                        query_cost: data.stats?.query_cost || "$0.00",
+                        search_queries: data.stats?.instantaneous_latency_ms ? data.stats.instantaneous_latency_ms.search_queries : [],
+                        hyde_doc: data.stats?.hyde_doc || "",
+                        raw_prompt: data.stats?.raw_prompt || "",
+                        stats: data.stats || {}
+                    };
+
+                    // Update stats panel
+                    if (data.stats) {
+                        statQ.textContent = data.stats.queries_handled || statQ.textContent;
+                        if (data.stats.compression_ratio !== undefined) {
+                            statC.textContent = Math.round((1 - data.stats.compression_ratio) * 100) + '%';
+                        }
+                        statT.textContent = latency + 'ms';
+                        statM.textContent = data.stats.active_memories || 0;
+                        if (data.stats.cpu_usage_percent !== undefined)    statCpu.textContent = data.stats.cpu_usage_percent + '%';
+                        if (data.stats.memory_usage_percent !== undefined) statRam.textContent = data.stats.memory_usage_percent + '%';
+                    }
+
+                    // Render Glass Box Inspector
+                    renderInspector(finalData);
                 }
             }
-
-            // Glass Box Inspector
-            renderInspector(data);
         }
     } catch (err) {
-        addLog("Communication failure", "ERROR");
-        addMsg(`CRITICAL ERROR: ${err.message}`, "ai");
+        if (err.name !== 'AbortError') {
+            addLog(`Communication failure: ${err.message}`, "ERROR");
+            bodyContainer.innerHTML = `<span style="color: #ff4444; font-weight: bold;">CRITICAL ERROR:</span> ${err.message}`;
+            bodyContainer.classList.remove('typing-cursor');
+        }
     } finally {
         btn.disabled = false;
+        if (stopBtn) stopBtn.style.display = 'none';
+        abortController = null;
     }
 });
 

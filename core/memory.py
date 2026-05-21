@@ -91,23 +91,36 @@ class ConversationMemory:
 
     def get_active_context(self) -> str:
         """
-        Retrieves top relevant memories that haven't 'faded' (weight > threshold).
-        Returns a formatted string for LLM context.
+        Retrieves top relevant memories that haven't 'faded' (weight > threshold),
+        and formats them in chronological order.
         """
         t_start = time.time()
-        active = [e for e in self.entries if e.current_weight(self.decay_rate) > MEMORY_WEIGHT_THRESHOLD]
-        active.sort(key=lambda x: x.current_weight(self.decay_rate), reverse=True)
+        # Associate each entry with its original insertion index to preserve chronology
+        indexed_entries = list(enumerate(self.entries))
+        
+        # Filter entries with weight > threshold
+        active = [
+            (idx, e) for idx, e in indexed_entries 
+            if e.current_weight(self.decay_rate) > MEMORY_WEIGHT_THRESHOLD
+        ]
+        
+        # Sort by weight descending to prioritize high-importance and recent entries
+        active.sort(key=lambda x: x[1].current_weight(self.decay_rate), reverse=True)
 
-        context_parts = []
+        selected_indexed = []
         total_tokens = 0
-        for entry in active:
+        for idx, entry in active:
             entry_text = f"[{entry.role}]: {entry.text}\n"
             entry_tokens = len(tokenizer.encode(entry_text))
             if total_tokens + entry_tokens < self.max_tokens:
-                context_parts.append(entry_text)
+                selected_indexed.append((idx, entry_text))
                 total_tokens += entry_tokens
             else:
                 break
+
+        # Sort the selected entries chronologically by their original index
+        selected_indexed.sort(key=lambda x: x[0])
+        context_parts = [text for idx, text in selected_indexed]
 
         t_ms = (time.time() - t_start) * 1000
         logger.info(f"Extracted context: {len(context_parts)}/{len(self.entries)} entries ({total_tokens} tokens) in {t_ms:.1f}ms")

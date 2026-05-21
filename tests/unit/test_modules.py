@@ -289,7 +289,259 @@ class TestLLMService(unittest.TestCase):
         finally:
             if original:
                 os.environ["GROQ_API_KEY"] = original
+class TestLLMServiceRobustness(unittest.TestCase):
+    @patch('core.llm.Groq')
+    @patch('time.sleep')  # Mock sleep so tests run instantly
+    def test_retry_on_rate_limit_eventual_success(self, mock_sleep, MockGroq):
+        """Should retry upon encountering RateLimitError and succeed eventually."""
+        import httpx
+        import groq
+        from core.llm import LLMService
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "Success Answer"
+
+        req = httpx.Request('POST', 'https://api.groq.com')
+        r_429 = httpx.Response(status_code=429, request=req)
+
+        # Mock side effect: 2 rate limits, then success
+        mock_create = MockGroq.return_value.chat.completions.create
+        mock_create.side_effect = [
+            groq.RateLimitError("Rate limited", response=r_429, body=None),
+            groq.RateLimitError("Rate limited again", response=r_429, body=None),
+            mock_completion
+        ]
+
+        service = LLMService(api_key="test-key")
+        result = service.complete_text("Test retry")
+
+        self.assertEqual(result, "Success Answer")
+        self.assertEqual(mock_create.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    @patch('core.llm.Groq')
+    @patch('time.sleep')
+    def test_retry_exhaustion_raises(self, mock_sleep, MockGroq):
+        """Should raise error after exhausting all retries."""
+        import httpx
+        import groq
+        from core.llm import LLMService
+
+        req = httpx.Request('POST', 'https://api.groq.com')
+        r_429 = httpx.Response(status_code=429, request=req)
+
+        mock_create = MockGroq.return_value.chat.completions.create
+        mock_create.side_effect = groq.RateLimitError("Rate limited constantly", response=r_429, body=None)
+
+        service = LLMService(api_key="test-key")
+        with self.assertRaises(groq.RateLimitError):
+            service.complete_text("Test retry failure")
+
+        self.assertEqual(mock_create.call_count, 5)
+        self.assertEqual(mock_sleep.call_count, 4)
+
+    @patch('core.llm.Groq')
+    @patch('time.sleep')
+    def test_no_retry_on_validation_error(self, mock_sleep, MockGroq):
+        """Should NOT retry on non-retriable exceptions (e.g., normal ValueError)."""
+        from core.llm import LLMService
+
+        mock_create = MockGroq.return_value.chat.completions.create
+        mock_create.side_effect = ValueError("Some custom user input error")
+
+        service = LLMService(api_key="test-key")
+        with self.assertRaises(ValueError):
+            service.complete_text("Test non-retriable")
+
+        self.assertEqual(mock_create.call_count, 1)
+        self.assertEqual(mock_sleep.call_count, 0)
+
+    @patch('core.llm.Groq')
+    @patch('time.sleep')
+    def test_retry_on_custom_status_code_error(self, mock_sleep, MockGroq):
+        """Should retry on custom exceptions that carry a 429 or 5xx status_code attribute."""
+        from core.llm import LLMService
+
+        class CustomAPIStatusError(Exception):
+            def __init__(self, status_code):
+                self.status_code = status_code
+                super().__init__(f"Error {status_code}")
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "Status Success Answer"
+
+        mock_create = MockGroq.return_value.chat.completions.create
+        mock_create.side_effect = [
+            CustomAPIStatusError(status_code=502),
+            mock_completion
+        ]
+
+        service = LLMService(api_key="test-key")
+        result = service.complete_text("Test status code retry")
+
+        self.assertEqual(result, "Status Success Answer")
+        self.assertEqual(mock_create.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+
+class TestPersistenceRobustness(unittest.TestCase):
+    def setUp(self):
+        self.db_path = "test_robustness_memory.db"
+        
+    def tearDown(self):
+        if os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
+
+    @patch('sqlite3.connect')
+    @patch('time.sleep')
+    def test_execute_with_retry_locks(self, mock_sleep, mock_connect):
+        """Should retry upon encountering OperationalError (locked/busy) and eventually succeed."""
+        from core.persistence import PersistentMemoryStore
+        import sqlite3
+        
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__.return_value = mock_conn
+        
+        store = PersistentMemoryStore(db_path=self.db_path)
+        
+        # Now let's test a custom function run through execute_with_retry
+        mock_func = MagicMock()
+        mock_func.side_effect = [
+            sqlite3.OperationalError("database is locked"),
+            sqlite3.OperationalError("database is locked"),
+            "success_result"
+        ]
+        
+        result = store.execute_with_retry(mock_func)
+        self.assertEqual(result, "success_result")
+        self.assertEqual(mock_func.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    @patch('sqlite3.connect')
+    @patch('time.sleep')
+    def test_execute_with_retry_exhaustion(self, mock_sleep, mock_connect):
+        """Should raise OperationalError after exhausting all retries."""
+        from core.persistence import PersistentMemoryStore
+        import sqlite3
+        
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__.return_value = mock_conn
+        
+        store = PersistentMemoryStore(db_path=self.db_path)
+        
+        mock_func = MagicMock()
+        mock_func.side_effect = sqlite3.OperationalError("database is locked")
+        
+        with self.assertRaises(sqlite3.OperationalError):
+            store.execute_with_retry(mock_func)
+            
+        self.assertEqual(mock_func.call_count, 5)
+        self.assertEqual(mock_sleep.call_count, 4)
+
+    def test_wal_mode_enabled(self):
+        """Verify WAL journal mode is active in the sqlite database."""
+        from core.persistence import PersistentMemoryStore
+        import sqlite3
+        
+        store = PersistentMemoryStore(db_path=self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("PRAGMA journal_mode;")
+            mode = cursor.fetchone()[0]
+            self.assertEqual(mode.lower(), "wal")
+
+
+class TestRetrieverRobustness(unittest.TestCase):
+    @patch('weaviate.connect_to_weaviate_cloud')
+    @patch('core.retriever.SentenceTransformer')
+    @patch('time.sleep')
+    def test_weaviate_connection_retries(self, mock_sleep, mock_st, mock_connect):
+        """Verify that Retriever tries to connect multiple times on failure."""
+        from core.retriever import WeaviateRetriever
+        
+        mock_client = MagicMock()
+        mock_client.collections.exists.return_value = True
+        
+        # 2 failures, then 1 success
+        mock_connect.side_effect = [
+            Exception("Connection timed out"),
+            Exception("Connection refused"),
+            mock_client
+        ]
+        
+        retriever = WeaviateRetriever()
+        
+        self.assertEqual(mock_connect.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(retriever.client, mock_client)
+
+    @patch('weaviate.connect_to_weaviate_cloud')
+    @patch('core.retriever.SentenceTransformer')
+    @patch('time.sleep')
+    def test_weaviate_connection_exhaustion(self, mock_sleep, mock_st, mock_connect):
+        """Verify that connection failure raises exception after max retries."""
+        from core.retriever import WeaviateRetriever
+        
+        mock_connect.side_effect = Exception("Permanent connection error")
+        
+        with self.assertRaises(Exception):
+            WeaviateRetriever()
+            
+        self.assertEqual(mock_connect.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    @patch('weaviate.connect_to_weaviate_cloud')
+    @patch('core.retriever.SentenceTransformer')
+    @patch('time.sleep')
+    def test_execute_with_retry_transient_failure(self, mock_sleep, mock_st, mock_connect):
+        """Should retry on transient errors and succeed."""
+        from core.retriever import WeaviateRetriever
+        import weaviate.exceptions
+        
+        mock_client = MagicMock()
+        mock_client.collections.exists.return_value = True
+        mock_connect.return_value = mock_client
+        
+        retriever = WeaviateRetriever()
+        
+        mock_op = MagicMock()
+        mock_op.side_effect = [
+            weaviate.exceptions.WeaviateConnectionError("connection rate limit 429 error"),
+            "success_data"
+        ]
+        
+        result = retriever.execute_with_retry(mock_op)
+        self.assertEqual(result, "success_data")
+        self.assertEqual(mock_op.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    @patch('weaviate.connect_to_weaviate_cloud')
+    @patch('core.retriever.SentenceTransformer')
+    @patch('time.sleep')
+    def test_execute_with_retry_non_transient_raises(self, mock_sleep, mock_st, mock_connect):
+        """Should NOT retry on non-transient errors."""
+        from core.retriever import WeaviateRetriever
+        
+        mock_client = MagicMock()
+        mock_client.collections.exists.return_value = True
+        mock_connect.return_value = mock_client
+        
+        retriever = WeaviateRetriever()
+        
+        mock_op = MagicMock()
+        mock_op.side_effect = ValueError("invalid query argument")
+        
+        with self.assertRaises(ValueError):
+            retriever.execute_with_retry(mock_op)
+            
+        self.assertEqual(mock_op.call_count, 1)
+        self.assertEqual(mock_sleep.call_count, 0)
 
 
 if __name__ == "__main__":
     unittest.main()
+

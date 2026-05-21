@@ -14,11 +14,13 @@ import re
 import uuid
 import logging
 import time
+import random
 import weaviate
 import weaviate.classes as wvc
 from weaviate.classes.init import Auth
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Optional
+import weaviate.exceptions
 
 from core.config import EMBEDDING_MODEL, HYBRID_ALPHA_DEFAULT, HYBRID_ALPHA_KEYWORD
 
@@ -46,19 +48,26 @@ class WeaviateRetriever:
             timeout=wvc.init.Timeout(init=60, query=120, insert=120)
         )
 
-        try:
-            self.client = weaviate.connect_to_weaviate_cloud(
-                cluster_url=self.url,
-                auth_credentials=Auth.api_key(self.api_key),
-                additional_config=config
-            )
-        except Exception as e:
-            logger.warning(f"Connection attempt 1 failed: {e}. Retrying...")
-            self.client = weaviate.connect_to_weaviate_cloud(
-                cluster_url=self.url,
-                auth_credentials=Auth.api_key(self.api_key),
-                additional_config=config
-            )
+        max_conn_retries = 3
+        conn_base_delay = 1.0
+        for attempt in range(max_conn_retries):
+            try:
+                self.client = weaviate.connect_to_weaviate_cloud(
+                    cluster_url=self.url,
+                    auth_credentials=Auth.api_key(self.api_key),
+                    additional_config=config
+                )
+                break
+            except Exception as e:
+                if attempt == max_conn_retries - 1:
+                    logger.error(f"Failed to connect to Weaviate Cloud after {max_conn_retries} attempts: {e}")
+                    raise
+                delay = conn_base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    f"Connection attempt {attempt+1} failed: {e}. "
+                    f"Retrying in {delay:.2f}s..."
+                )
+                time.sleep(delay)
 
         # Ensure the collection schema is initialized
         if not self.client.collections.exists("RAGKnowledge"):
@@ -79,6 +88,46 @@ class WeaviateRetriever:
         # Load local embedding model
         self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
 
+    def execute_with_retry(self, func, *args, **kwargs):
+        """
+        Executes a Weaviate client operation with automatic retries on transient errors.
+        """
+        max_retries = 3
+        base_delay = 0.5
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except (
+                weaviate.exceptions.WeaviateConnectionError,
+                weaviate.exceptions.UnexpectedStatusCodeError,
+                weaviate.exceptions.WeaviateQueryError,
+                Exception
+            ) as e:
+                err_name = type(e).__name__
+                err_msg = str(e).lower()
+                is_transient = any(
+                    x in err_msg 
+                    for x in ["timeout", "connection", "rate limit", "429", "502", "503", "504", "unavailable", "network"]
+                )
+                if hasattr(e, "status_code"):
+                    if e.status_code == 429 or (e.status_code and e.status_code >= 500):
+                        is_transient = True
+                
+                if not is_transient:
+                    raise
+
+                
+                if attempt == max_retries - 1:
+                    logger.error(f"Weaviate operation failed after {max_retries} attempts: {e}")
+                    raise
+                
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.1)
+                logger.warning(
+                    f"Weaviate operation failed with {err_name}: {e}. "
+                    f"Retrying in {delay:.2f}s (Attempt {attempt+1}/{max_retries})...."
+                )
+                time.sleep(delay)
+
     def add_documents(self, docs: List[str], tags: List[str] = None, source: str = "unknown"):
         """
         Processes and indexes document chunks into Weaviate.
@@ -90,14 +139,22 @@ class WeaviateRetriever:
         t_embed = time.time()
         logger.debug(f"Generated {len(docs)} embeddings in {(t_embed - t_start)*1000:.1f}ms")
 
-        with self.collection.batch.dynamic() as batch:
-            for i, doc in enumerate(docs):
-                doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, doc)
-                batch.add_object(
-                    properties={"text": doc, "tags": tags or [], "source": source},
-                    vector=embeddings[i].tolist() if hasattr(embeddings[i], "tolist") else embeddings[i],
-                    uuid=doc_id
+        def _batch_insert():
+            with self.collection.batch.dynamic() as batch:
+                for i, doc in enumerate(docs):
+                    doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, doc)
+                    batch.add_object(
+                        properties={"text": doc, "tags": tags or [], "source": source},
+                        vector=embeddings[i].tolist() if hasattr(embeddings[i], "tolist") else embeddings[i],
+                        uuid=doc_id
+                    )
+            failed = self.collection.batch.failed_objects
+            if failed:
+                raise weaviate.exceptions.WeaviateQueryError(
+                    f"Weaviate batch insert failed for {len(failed)} objects. First error: {failed[0].message}"
                 )
+
+        self.execute_with_retry(_batch_insert)
 
         t_batch = time.time()
         logger.info(
@@ -130,15 +187,18 @@ class WeaviateRetriever:
         alpha = self._detect_alpha(query)
         self.alpha = alpha
 
-        response = self.collection.query.hybrid(
-            query=query,
-            vector=query_vector,
-            alpha=alpha,
-            limit=top_k,
-            filters=filters,
-            return_properties=["text", "tags", "source"],
-            return_metadata=wvc.query.MetadataQuery(score=True)
-        )
+        def _query_db():
+            return self.collection.query.hybrid(
+                query=query,
+                vector=query_vector,
+                alpha=alpha,
+                limit=top_k,
+                filters=filters,
+                return_properties=["text", "tags", "source"],
+                return_metadata=wvc.query.MetadataQuery(score=True)
+            )
+
+        response = self.execute_with_retry(_query_db)
 
         t_search = time.time()
         self.last_embed_latency_ms = (t_embed - t_start) * 1000
@@ -160,8 +220,10 @@ class WeaviateRetriever:
     def get_count(self) -> int:
         """Returns the total number of objects in the RAGKnowledge collection."""
         try:
-            res = self.collection.aggregate.over_all(total_count=True)
-            return res.total_count
+            def _aggregate():
+                res = self.collection.aggregate.over_all(total_count=True)
+                return res.total_count
+            return self.execute_with_retry(_aggregate)
         except Exception:
             return 0
 

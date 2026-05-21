@@ -39,6 +39,7 @@
             <form id="comm-form" class="input-bar">
                 <input type="text" id="comm-input" placeholder="Query input..." required autofocus autocomplete="off">
                 <button type="submit" id="comm-btn">EXECUTE</button>
+                <button type="button" id="stop-btn" style="display: none; background: #990000;">STOP</button>
             </form>
         </div>
 
@@ -69,6 +70,10 @@
                     <label class="mode-btn">
                         <input type="radio" name="engine-mode" value="normal" style="display: none;">
                         <div class="mode-label">SIMPLE_RAG</div>
+                    </label>
+                    <label class="mode-btn">
+                        <input type="radio" name="engine-mode" value="agentic" style="display: none;">
+                        <div class="mode-label">AGENTIC_LOOP</div>
                     </label>
                 </div>
             </div>

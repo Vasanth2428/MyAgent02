@@ -446,6 +446,13 @@ This is used in:
 
 Each user gets a unique **Session ID** (stored in the browser's `localStorage`). Memory from Session A never leaks into Session B.
 
+### SQLite Concurrency & Reliability
+
+The persistence layer (`core/persistence.py`) incorporates advanced mechanisms to handle high concurrency and write-locking:
+- **Write-Ahead Logging (WAL)**: Initialized via `PRAGMA journal_mode=WAL;`. This decouples reads from writes, allowing multiple parallel readers to execute queries even when a transaction is writing.
+- **Composite Database Indexing**: An index `idx_memory_session_timestamp` is created on `memory (session_id, timestamp)`. This prevents table scans and optimizes the performance of retrieving conversation histories under high load.
+- **Transaction Retry Helper**: Wraps operations in a retry handler (`execute_with_retry`) using exponential backoff with random jitter. If a `sqlite3.OperationalError` (specifically `database is locked` or `database is busy`) is encountered, the connection retries up to 5 times (base delay of 50ms, doubling with each attempt, plus up to 20ms jitter) before raising.
+
 ### Temporal Decay
 
 The formula: **W = I × e^(-0.1 × H)**
@@ -459,6 +466,15 @@ The formula: **W = I × e^(-0.1 × H)**
 | 24 hours           | 0.09 (nearly invisible) |
 
 This ensures the LLM always focuses on your current conversation topic.
+
+### Chronological Sorting
+
+To ensure the conversation flow remains coherent to the LLM, the retrieval of memory context preserves chronological order:
+1. All stored entries for the current session are analyzed.
+2. Entries with relevance weights higher than `MEMORY_WEIGHT_THRESHOLD` are filtered in.
+3. The filtered active entries are ranked by current decay-adjusted weights.
+4. The highest-ranked entries are selected sequentially until the memory token budget (`MEMORY_TOKEN_BUDGET` = 300 tokens) is saturated.
+5. **Critical Step**: Before formulating the final prompt segment, the selected entries are re-sorted chronologically according to their original input sequence (relative insertion order). This guarantees that the LLM does not receive scrambled dialogue.
 
 ---
 
@@ -538,6 +554,13 @@ Live system metrics for the dashboard.
 
 Retrieves the last 10 conversation turns for a session from SQLite.
 
+### Database Persistence (SQLite)
+
+All conversation logs and metrics are backed by SQLite. Under the hood, database operations are managed with production-grade safety:
+- **Journal Mode**: WAL (Write-Ahead Logging) is enabled dynamically on all connections to permit concurrent reads during write locks.
+- **Connection Isolation**: Connects to `memory.db` with a connection timeout of 30 seconds.
+- **Retry Mechanism**: Read/write actions are executed via a transaction retry helper implementing binary exponential backoff with randomized jitter to resolve potential write contentions gracefully.
+
 ---
 
 ## 13. Performance Optimizations
@@ -551,6 +574,12 @@ Retrieves the last 10 conversation turns for a session from SQLite.
 | **asyncio.to_thread**         | main.py  | CPU-heavy ML work runs in thread pool, keeping the API responsive |
 | **Deterministic UUIDs**       | Upload   | Same text → same UUID → no duplicate entries in Weaviate        |
 | **127.0.0.1 (not localhost)** | Frontend | Avoids DNS resolution delay on some systems                       |
+| **SQLite WAL Mode**                 | Persistence | Decouples read/write processes, allowing parallel reads without locking blocks. |
+| **SQLite Transaction Retries**      | Persistence | Implements exponential backoff + jitter to resolve concurrent DB lock contentions. |
+| **Weaviate Connection Retries**     | Retriever | Handshakes Weaviate Cloud up to 3 times on startup to handle cold starts. |
+| **Weaviate Operation Retries**      | Retriever | Retries transient timeouts, rate limits, and network glitches with backoff & jitter. |
+| **Tolerant ReAct Parsing**          | Agent    | Flexibly parses quotes, brackets, and extra spaces in actions, preventing parsing crashes. |
+| **ReAct loop self-correction**      | Agent    | Feeds formatting errors back into LLM context dynamically to auto-recover without aborting. |
 
 ---
 
@@ -610,6 +639,9 @@ python tests/run_suite.py
 | **Network Timeout**                   | Weaviate Cloud handshake >5s                               | Connection timeouts are set to 60s. Check your internet connection.                                        |
 | **UI shows no history after refresh** | Session ID mismatch                                        | The SID is stored in `localStorage`. Clearing browser data creates a new session.                        |
 | **"UNSAFE ATTEMPT" in browser**       | Opening `index.html` via `file://` protocol            | Normal browser security warning. Does not affect API calls to `127.0.0.1:8000`.                          |
+| **SQLite `database is locked` error** | High concurrency lock contention during writes              | Handled automatically by retry helper (5 attempts with backoff). Verify no external DB locks exist.          |
+| **Weaviate Non-Transient Query Error** | Invalid query parameters, syntax errors, or schema mismatches | Immediately raises error (fails fast) to prevent useless retries and surface the actual bug immediately.   |
+| **ReAct Agent Format Violation**     | LLM output violates ReAct spec (`Action: tool[arg]`)        | Loop intercepts violation and posts a self-correction observation to guide LLM back to valid format.       |
 
 ---
 

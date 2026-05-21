@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Literal, Optional
 from pypdf import PdfReader
@@ -122,7 +122,7 @@ class QueryRequest(BaseModel):
     """Request schema for the /query endpoint."""
     question: str
     session_id: str = "default"
-    mode: Literal["context_engine", "normal"] = "context_engine"
+    mode: Literal["context_engine", "normal", "agentic"] = "context_engine"
     source_filter: Optional[str] = None
 
 
@@ -159,6 +159,56 @@ async def query_rag(request: QueryRequest):
         error_details = traceback.format_exc()
         logger.error(f"Error processing query: {e}\n{error_details}")
         raise HTTPException(status_code=500, detail=f"Engine Error: {str(e)}\n\nTRACEBACK:\n{error_details}")
+
+
+@app.post("/query_stream")
+async def query_rag_stream(request: QueryRequest):
+    """
+    Streaming endpoint for AI chat.
+    Orchestrates the retrieval and generation pipeline chunk-by-chunk.
+    """
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    
+    async def event_generator():
+        import json
+        try:
+            logger.info(f"Stream Query from session {request.session_id}: {request.question[:50]}...")
+            loop = asyncio.get_event_loop()
+            
+            def run_sync_gen(queue):
+                try:
+                    for event in rag.ask_stream(
+                        request.question,
+                        session_id=request.session_id,
+                        mode=request.mode,
+                        source_filter=request.source_filter
+                    ):
+                        loop.call_soon_threadsafe(queue.put_nowait, event)
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                except Exception as e:
+                    loop.call_soon_threadsafe(queue.put_nowait, {"event": "error", "message": str(e)})
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            queue = asyncio.Queue()
+            loop.run_in_executor(None, run_sync_gen, queue)
+
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                if isinstance(event, dict) and event.get("event") == "error":
+                    yield f"data: {json.dumps(event)}\n\n"
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+                
+        except asyncio.CancelledError:
+            logger.warning(f"Client disconnected from query stream for session {request.session_id}.")
+        except Exception as e:
+            logger.error(f"Stream generation error: {e}")
+            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/upload")
