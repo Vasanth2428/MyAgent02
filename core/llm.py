@@ -122,6 +122,7 @@ class LLMService:
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
+            "frequency_penalty": 0.3, # Added default frequency penalty to prevent repetition
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens

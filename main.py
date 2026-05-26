@@ -81,6 +81,11 @@ async def lifespan(app: FastAPI):
         retriever = WeaviateRetriever()
         rag = RAGContextEngine(retriever)
         logger.info("RAG Engine successfully initialized.")
+        try:
+            summary = rag.registry.get_registry_summary()
+            logger.info(f"Knowledge Registry Summary: Datasets={summary['datasets']}, Domains={summary['domains']}, Total Docs={summary['total_documents_count']}")
+        except Exception as reg_err:
+            logger.warning(f"Could not load Knowledge Registry summary on startup: {reg_err}")
         yield
     except Exception as e:
         logger.error(f"Critical error during startup: {e}")

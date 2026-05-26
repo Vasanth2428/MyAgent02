@@ -33,6 +33,7 @@ from core.compressor import Compressor
 from core.reranker import NeuralReranker
 from core.expander import QueryExpander
 from core.hyde import HyDEGenerator
+from core.registry import KnowledgeRegistry
 
 logger = logging.getLogger("RAG.Engine")
 tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
@@ -56,6 +57,7 @@ class RAGContextEngine:
         self.persistent_memory = PersistentMemoryStore()
         self.compressor = Compressor()
         self.reranker = NeuralReranker()
+        self.registry = KnowledgeRegistry(self)
         self.stats = {
             "queries": 0,
             "queries_compressed": 0,
@@ -93,6 +95,56 @@ class RAGContextEngine:
         self.get_memory(session_id).add(text, importance, role)
         telemetry_json = json.dumps(telemetry) if telemetry else None
         self.persistent_memory.add_entry(session_id, text, role, importance, telemetry=telemetry_json)
+
+    # ------------------------------------------------------------------
+    # Registry query detection helper
+    # ------------------------------------------------------------------
+
+    def _is_registry_query(self, query: str) -> bool:
+        """Detects if query asks about available documents/sources."""
+        q = query.lower().strip()
+        registry_patterns = [
+            "what document", "which document", "list document", "show document", "available document",
+            "documents do you", "documents contain", "document do you contain",
+            "what file", "which file", "list file", "show file", "show me file", "show me files", "available file", "files do you", "files contain",
+            "what dataset", "which dataset", "list dataset", "show dataset", "available dataset", "datasets do you",
+            "what database", "which database", "list database", "show database", "available database", "databases do you",
+            "what schema", "which schema", "list schema", "show schema", "available schema", "schemas do you",
+            "what source", "which source", "list source", "show source", "show me source", "show me sources", "available source", "sources do you",
+            "your document", "your file", "your dataset", "your database", "your schema", "your source",
+            "my document", "my file", "my dataset", "my database", "my schema", "my source"
+        ]
+        # Handle "show me the source(s)" pattern - check for source near "show me"
+        words = q.split()
+        if "show" in words and "me" in words:
+            try:
+                me_idx = words.index("me")
+                # Check if source/sources is within 2 words after "me"
+                for offset in range(1, 4):
+                    if me_idx + offset < len(words) and ("source" in words[me_idx + offset] or "sources" in words[me_idx + offset]):
+                        return True
+            except ValueError:
+                pass
+        return any(pat in q for pat in registry_patterns)
+
+    def _get_registry_context_text(self) -> str:
+        """Returns formatted registry text for querying what documents are available."""
+        try:
+            summary = self.registry.get_registry_summary()
+            sources = summary.get("sources", [])
+            total_docs = summary.get("total_documents_count", 0)
+            
+            if not sources:
+                return "I don't have any documents indexed at the moment. You can upload documents via the /upload endpoint."
+            
+            result = ["### AVAILABLE DOCUMENTS ###\n"]
+            for i, src in enumerate(sources, 1):
+                result.append(f"{i}. {src}")
+            result.append(f"\nTotal indexed documents: {total_docs}")
+            return "\n".join(result)
+        except Exception as e:
+            logger.error(f"Error getting registry context: {e}")
+            return "Unable to retrieve document listing at this time."
 
     # ------------------------------------------------------------------
     # Pipeline phases (private helpers)
@@ -403,6 +455,44 @@ class RAGContextEngine:
         """
         logger.info(f"\n[INIT] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode} | Limit: {context_limit}")
         self.stats["queries"] += 1
+        
+        # Early exit for registry queries
+        if self._is_registry_query(query):
+            logger.info("Early exit: Registry query detected.")
+            response = self._get_registry_context_text()
+            self.save_memory(session_id, query, "user")
+            self.save_memory(session_id, response, "assistant", 0.8)
+            return {
+                "query": query,
+                "response": response,
+                "mode": mode,
+                "search_queries": [query],
+                "raw_prompt": response,
+                "retrieved_context": [],
+                "compressed_context": response,
+                "memory_context": "",
+                "hyde_doc": "",
+                "tps": 0.0,
+                "query_cost": "$0.00000000",
+                "stats": {
+                    "compression_ratio": 1.0,
+                    "avg_compression_ratio": round(self.stats["avg_compression_ratio"], 3),
+                    "queries_handled": self.stats["queries"],
+                    "active_memories": 0,
+                    "instantaneous_latency_ms": {"total_execution_ms": 0.0},
+                    "avg_latency_ms": round(self.stats["avg_latency_ms"], 2),
+                    "cpu_usage_percent": psutil.cpu_percent(interval=None),
+                    "memory_usage_percent": psutil.virtual_memory().percent,
+                    "context_used_percent": 0.0,
+                    "exact_tokens": {"prompt": 0, "completion": 0, "total": 0},
+                    "budget_tracking": {"memory_tokens_used": 0, "memory_tokens_limit": MEMORY_TOKEN_BUDGET, "document_tokens_used": 0, "document_tokens_limit": TOTAL_CONTEXT_BUDGET},
+                    "overflow_telemetry": {"overflow_occurred": False, "limit": None, "initial_tokens": 0, "final_tokens": 0, "steps": []},
+                    "mode": mode,
+                    "alpha": 0.5,
+                    "reranker_peak_score": 0.0
+                }
+            }
+        
         memory = self.get_memory(session_id)
         latencies = {}
         t_start = time.time()
@@ -537,9 +627,29 @@ class RAGContextEngine:
         Streaming query endpoint. Yields progress updates and LLM output tokens.
         """
         from typing import Dict as TypedDict
+        import time as time_module
+        
         if mode == "agentic":
-            # Delegate entirely to the agent's ReAct loop
             yield from self.agent.run_stream(query, session_id, source_filter, context_limit=context_limit)
+            return
+        
+        # Early exit for registry queries
+        if self._is_registry_query(query):
+            logger.info("Early exit: Registry query detected (stream).")
+            yield {"event": "state_change", "state": "STREAMING_FINAL_RESPONSE"}
+            registry_text = self._get_registry_context_text()
+            for i in range(0, len(registry_text), 20):
+                yield {"event": "answer_chunk", "text": registry_text[i:i+20]}
+                time_module.sleep(0.01)
+            self.save_memory(session_id, query, "user")
+            self.save_memory(session_id, registry_text, "assistant", 0.8)
+            yield {"event": "done", "response": registry_text, "stats": {
+                "compression_ratio": 1.0,
+                "overflow_telemetry": {"overflow_occurred": False, "limit": None, "initial_tokens": 0, "final_tokens": 0, "steps": []},
+                "budget_tracking": {"memory_tokens_used": 0, "memory_tokens_limit": 1500, "document_tokens_used": 0, "document_tokens_limit": 0},
+                "exact_tokens": {"prompt": 0, "completion": 0, "total": 0},
+                "mode": mode
+            }}
             return
 
         logger.info(f"\n[INIT STREAM] Query: '{query[:60]}...' | Session: {session_id} | Mode: {mode} | Limit: {context_limit}")

@@ -42,6 +42,9 @@ class WeaviateRetriever:
     def __init__(self):
         self.url = os.getenv("WEAVIATE_URL")
         self.api_key = os.getenv("WEAVIATE_API_KEY")
+        self.client = None
+        self.collection = None
+        self._connected = False
 
         # Connect to Weaviate Cloud with extended timeouts for stability
         config = wvc.init.AdditionalConfig(
@@ -57,32 +60,37 @@ class WeaviateRetriever:
                     auth_credentials=Auth.api_key(self.api_key),
                     additional_config=config
                 )
+                self._connected = True
                 break
             except Exception as e:
                 if attempt == max_conn_retries - 1:
                     logger.error(f"Failed to connect to Weaviate Cloud after {max_conn_retries} attempts: {e}")
-                    raise
-                delay = conn_base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-                logger.warning(
-                    f"Connection attempt {attempt+1} failed: {e}. "
-                    f"Retrying in {delay:.2f}s..."
+                    self._connected = False
+                    logger.warning("Starting in degraded mode - database operations will fail gracefully.")
+                else:
+                    delay = conn_base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(
+                        f"Connection attempt {attempt+1} failed: {e}. "
+                        f"Retrying in {delay:.2f}s..."
+                    )
+                    time.sleep(delay)
+
+        if self.client and self._connected:
+            # Ensure the collection schema is initialized
+            if not self.client.collections.exists("RAGKnowledge"):
+                logger.info("Initializing 'RAGKnowledge' collection...")
+                self.client.collections.create(
+                    name="RAGKnowledge",
+                    vector_config=wvc.config.Configure.Vectorizer.none(),
+                    properties=[
+                        wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="tags", data_type=wvc.config.DataType.TEXT_ARRAY),
+                        wvc.config.Property(name="source", data_type=wvc.config.DataType.TEXT),
+                    ]
                 )
-                time.sleep(delay)
 
-        # Ensure the collection schema is initialized
-        if not self.client.collections.exists("RAGKnowledge"):
-            logger.info("Initializing 'RAGKnowledge' collection...")
-            self.client.collections.create(
-                name="RAGKnowledge",
-                vector_config=wvc.config.Configure.Vectorizer.none(),
-                properties=[
-                    wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
-                    wvc.config.Property(name="tags", data_type=wvc.config.DataType.TEXT_ARRAY),
-                    wvc.config.Property(name="source", data_type=wvc.config.DataType.TEXT),
-                ]
-            )
-
-        self.collection = self.client.collections.get("RAGKnowledge")
+            self.collection = self.client.collections.get("RAGKnowledge")
+        
         self.alpha = HYBRID_ALPHA_DEFAULT
 
         # Load local embedding model
@@ -133,6 +141,10 @@ class WeaviateRetriever:
         Processes and indexes document chunks into Weaviate.
         Uses deterministic UUIDs to prevent duplicate entries of the same text.
         """
+        if not self._connected:
+            logger.warning(f"Weaviate not connected - skipping document indexing for: {source}")
+            return
+        
         t_start = time.time()
 
         embeddings = self.embedding_model.encode(docs)
@@ -176,6 +188,12 @@ class WeaviateRetriever:
         """
         Performs a Hybrid Search (Semantic + Keyword) with optional hard filtering.
         """
+        if not self._connected:
+            logger.warning(f"Weaviate not connected - returning empty results for query: {query[:30]}...")
+            self.last_embed_latency_ms = 0.0
+            self.last_search_latency_ms = 0.0
+            return []
+        
         t_start = time.time()
         query_vector = self.embedding_model.encode(query).tolist()
         t_embed = time.time()
@@ -219,6 +237,8 @@ class WeaviateRetriever:
 
     def get_count(self) -> int:
         """Returns the total number of objects in the RAGKnowledge collection."""
+        if not self._connected:
+            return 0
         try:
             def _aggregate():
                 res = self.collection.aggregate.over_all(total_count=True)
@@ -229,5 +249,5 @@ class WeaviateRetriever:
 
     def close(self):
         """Safely terminates the connection to Weaviate Cloud."""
-        if self.client:
+        if self.client and self._connected:
             self.client.close()

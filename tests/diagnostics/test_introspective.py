@@ -2,18 +2,10 @@
 ================================================================================
 INTROSPECTIVE TEST SUITE 1: CONTEXT OVERFLOW & EVICTION TRACKER
 ================================================================================
-This test deliberately overflows the memory and compressor budgets, and logs
-EXACTLY which chunks of information are being pushed out (evicted) at each step.
-
-Think of it like watching a bouncer at a nightclub: we record who gets let in,
-who gets kicked out, and why.
 """
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import unittest
 import json
+import os
 from datetime import datetime, timedelta
 from core.memory import ConversationMemory, MemoryEntry
 from core.compressor import Compressor

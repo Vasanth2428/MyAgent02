@@ -166,7 +166,7 @@ header {
 /* ---- Main Layout Grid ---- */
 .main-grid {
     display: grid;
-    grid-template-columns: 310px 1fr 360px;
+    grid-template-columns: 310px minmax(0, 1fr) 360px;
     gap: 1px;
     background: var(--border-glass);
     flex-grow: 1;
@@ -180,6 +180,7 @@ header {
     gap: 1px;
     background: var(--border-glass);
     min-height: 0;
+    overflow-y: auto; /* Enable scroll if content is too tall */
 }
 
 .sidebar-left {
@@ -427,6 +428,8 @@ header {
     line-height: 1.6;
     animation: chat-bubble-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 .msg-user {
@@ -1170,12 +1173,87 @@ input:focus + .input-glow {
     50% { background: rgba(255, 51, 102, 0.18); }
 }
 
-/* Responsive Overrides */
+/* Responsive Overrides & Collapsible HUD styling */
+.hud-toggle-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-glass);
+    color: var(--text-secondary);
+    padding: 0.35rem 0.8rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-brand);
+    font-weight: 700;
+    font-size: 0.65rem;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0.5rem;
+}
+
+.hud-toggle-btn:hover {
+    background: rgba(0, 229, 255, 0.1);
+    border-color: var(--border-glass-active);
+    color: var(--accent-cyan);
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.25);
+}
+
+.hud-toggle-btn.hud-hidden-state {
+    border-color: var(--border-glass-warning);
+    color: var(--accent-amber);
+}
+
+.hud-toggle-btn.hud-hidden-state:hover {
+    background: rgba(255, 171, 0, 0.1);
+    box-shadow: 0 0 8px rgba(255, 171, 0, 0.25);
+}
+
+/* Collapsed state on large viewports */
+.main-grid.hud-collapsed {
+    grid-template-columns: 310px minmax(0, 1fr) !important;
+}
+
+.main-grid.hud-collapsed .sidebar-right {
+    display: none !important;
+}
+
 @media (max-width: 1200px) {
     .main-grid {
-        grid-template-columns: 280px 1fr;
+        grid-template-columns: 280px minmax(0, 1fr) !important;
+        position: relative !important;
     }
+    
     .sidebar-right {
-        display: none; /* Hide right sidebar on small viewports */
+        display: none !important; /* Hide right sidebar on small viewports by default */
+    }
+    
+    /* Show right sidebar as a floating overlay drawer on small viewports when explicitly toggled */
+    .main-grid.hud-visible {
+        grid-template-columns: 280px minmax(0, 1fr) !important; /* Keep columns intact so chat doesn't squeeze */
+    }
+    
+    .main-grid.hud-visible .sidebar-right {
+        display: flex !important;
+        position: absolute !important;
+        top: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        width: 320px !important;
+        z-index: 50 !important;
+        background: var(--surface-glass-dark) !important;
+        backdrop-filter: blur(20px) !important;
+        border-left: 1px solid var(--border-glass-active) !important;
+        box-shadow: -10px 0 30px rgba(0, 0, 0, 0.6) !important;
+        overflow-y: auto !important; /* Allow scroll if HUD contents are taller than viewport */
+    }
+    
+    @media (max-width: 768px) {
+        /* On extremely narrow viewports (e.g. phones), let the drawer take up most of the screen */
+        .main-grid.hud-visible .sidebar-right {
+            width: 80% !important;
+            max-width: 320px !important;
+        }
     }
 }

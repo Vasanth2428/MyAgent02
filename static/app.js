@@ -75,6 +75,17 @@ const AppState = {
     }
 };
 
+// ---- Mode Selector Listeners ----
+document.querySelectorAll('input[name="engine-mode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        if (e.target.checked) {
+            const mode = e.target.value;
+            activeModeBadge.textContent = mode.replace('_', ' ').toUpperCase();
+            addLog(`Processing mode changed to ${mode.replace('_', ' ').toUpperCase()}`, "SYSTEM");
+        }
+    });
+});
+
 // ---- Slider & Preset Listeners ----
 contextLimitSlider.addEventListener('input', (e) => {
     AppState.updateContextLimit(parseInt(e.target.value));
@@ -162,7 +173,7 @@ function addMsg(text, type = 'ai', telemetryData = null) {
                         <span class="badge-item">LIMIT: ${limitVal} TKN</span>
                         <span class="badge-item">FOOTPRINT: ${finalTkn} TKN</span>
                     </div>
-                    <button class="telemetry-inspect-btn" onclick="viewTelemetryDetails(${escapeHtml(JSON.stringify(telemetryData))})">
+                    <button type="button" class="telemetry-inspect-btn">
                         INSPECT
                     </button>
                 </div>
@@ -171,6 +182,16 @@ function addMsg(text, type = 'ai', telemetryData = null) {
     }
     
     msg.innerHTML = contentHtml;
+
+    if (type === 'ai' && telemetryData) {
+        const inspectBtn = msg.querySelector('.telemetry-inspect-btn');
+        if (inspectBtn) {
+            inspectBtn.addEventListener('click', () => {
+                viewTelemetryDetails(telemetryData, telemetryData.budget_tracking, telemetryData.query);
+            });
+        }
+    }
+
     chatWindow.appendChild(msg);
     chatWindow.scrollTop = chatWindow.scrollHeight;
     return msg;
@@ -322,145 +343,154 @@ form.addEventListener('submit', async (e) => {
                 }
 
                 if (data.event === "thought") {
-                    addLog(data.text, "THOUGHT");
-                } 
-                else if (data.event === "action") {
-                    addLog(`Executing tool: ${data.tool}[${data.input}]`, "ACTION");
-                }
-                else if (data.event === "observation") {
-                    addLog(`Received tool observation (${data.output.length} chars)`, "OBSERVATION");
-                }
-                else if (data.event === "overflow_detected") {
-                    // Trigger visual warning alerts
-                    overflowIndicatorDot.className = 'indicator-dot breached';
-                    overflowAlertBanner.className = 'overflow-banner alert-breached';
-                    overflowAlertBanner.innerHTML = `🚨 OVERFLOW DETECTED: Prompt (${data.initial} TKN) exceeds limit (${data.limit} TKN)`;
-                    
-                    tokenUsedVal.textContent = data.initial;
-                    updateProgressBar(data.initial, data.limit, true);
-                    
-                    addLog(`Context overflow detected! Size: ${data.initial} TKN. Limit: ${data.limit} TKN. Running recovery...`, "WARNING");
-                }
-                else if (data.event === "overflow_step") {
-                    // Stream lines to overflow debugger terminal shell
-                    const stepDiv = document.createElement('div');
-                    stepDiv.className = 'overflow-step-line';
-                    
-                    // Style lines based on contents
-                    if (stepDiv.textContent = data.text) {
-                        if (data.text.includes("🚨")) {
-                            stepDiv.className += ' step-alarm';
-                        } else if (data.text.includes("Phase 1")) {
-                            stepDiv.className += ' step-phase1';
-                        } else if (data.text.includes("Phase 2")) {
-                            stepDiv.className += ' step-phase2';
-                        } else if (data.text.includes("Phase 3")) {
-                            stepDiv.className += ' step-phase3';
-                        } else if (data.text.includes("✅")) {
-                            stepDiv.className += ' step-success';
-                        }
-                    }
-                    
-                    overflowLogWindow.appendChild(stepDiv);
-                    overflowLogWindow.scrollTop = overflowLogWindow.scrollHeight;
-                }
-                else if (data.event === "answer_chunk") {
-                    accumulatedText += data.text;
-                    try {
-                        bodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(accumulatedText) : accumulatedText;
-                    } catch (e) {
-                        bodyContainer.textContent = accumulatedText;
-                    }
-                    chatWindow.scrollTop = chatWindow.scrollHeight;
-                }
-                else if (data.event === "error") {
-                    throw new Error(data.message);
-                }
-                else if (data.event === "done") {
-                    const latency = Date.now() - startTime;
-                    addLog(`Processing complete: ${latency}ms`, 'SUCCESS');
-                    bodyContainer.classList.remove('typing-cursor');
+                     addLog(data.text, "THOUGHT");
+                 } 
+                 else if (data.event === "action") {
+                     addLog(`Executing tool: ${data.tool}[${data.input}]`, "ACTION");
+                 }
+                 else if (data.event === "observation") {
+                     addLog(`Received tool observation (${data.output.length} chars)`, "OBSERVATION");
+                 }
+                 else if (data.event === "state_change") {
+                     addLog(`State: ${data.state}`, "SYSTEM");
+                 }
+                 else if (data.event === "overflow_detected") {
+                     // Trigger visual warning alerts
+                     overflowIndicatorDot.className = 'indicator-dot breached';
+                     overflowAlertBanner.className = 'overflow-banner alert-breached';
+                     overflowAlertBanner.innerHTML = `🚨 OVERFLOW DETECTED: Prompt (${data.initial} TKN) exceeds limit (${data.limit} TKN)`;
+                     
+                     tokenUsedVal.textContent = data.initial;
+                     updateProgressBar(data.initial, data.limit, true);
+                     
+                     addLog(`Context overflow detected! Size: ${data.initial} TKN. Limit: ${data.limit} TKN. Running recovery...`, "WARNING");
+                 }
+                 else if (data.event === "overflow_step") {
+                     // Stream lines to overflow debugger terminal shell
+                     const stepDiv = document.createElement('div');
+                     stepDiv.className = 'overflow-step-line';
+                     
+                     // Style lines based on contents
+                     if (stepDiv.textContent = data.text) {
+                         if (data.text.includes("🚨")) {
+                             stepDiv.className += ' step-alarm';
+                         } else if (data.text.includes("Phase 1")) {
+                             stepDiv.className += ' step-phase1';
+                         } else if (data.text.includes("Phase 2")) {
+                             stepDiv.className += ' step-phase2';
+                         } else if (data.text.includes("Phase 3")) {
+                             stepDiv.className += ' step-phase3';
+                         } else if (data.text.includes("✅")) {
+                             stepDiv.className += ' step-success';
+                         }
+                     }
+                     
+                     overflowLogWindow.appendChild(stepDiv);
+                     overflowLogWindow.scrollTop = overflowLogWindow.scrollHeight;
+                 }
+                 else if (data.event === "answer_chunk") {
+                     accumulatedText += data.text;
+                     try {
+                         bodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(accumulatedText) : accumulatedText;
+                     } catch (e) {
+                         bodyContainer.textContent = accumulatedText;
+                     }
+                     chatWindow.scrollTop = chatWindow.scrollHeight;
+                 }
+                 else if (data.event === "error") {
+                     throw new Error(data.message);
+                 }
+                 else if (data.event === "done") {
+                     const latency = Date.now() - startTime;
+                     addLog(`Processing complete: ${latency}ms`, 'SUCCESS');
+                     bodyContainer.classList.remove('typing-cursor');
 
-                    const stats = data.stats || {};
-                    const telemetry = stats.overflow_telemetry || {};
-                    const budget = stats.budget_tracking || {};
+                     const stats = data.stats || {};
+                     const telemetry = stats.overflow_telemetry || {};
+                     const budget = stats.budget_tracking || {};
 
-                    // Sync budget progress bar to final compiled values
-                    const finalUsed = telemetry.final_tokens || (budget.memory_tokens_used + budget.document_tokens_used + 100);
-                    tokenUsedVal.textContent = finalUsed;
-                    updateProgressBar(finalUsed, contextLimit, finalUsed > contextLimit);
+                     // Sync budget progress bar to final compiled values
+                     const finalUsed = telemetry.final_tokens || (budget.memory_tokens_used + budget.document_tokens_used + 100);
+                     tokenUsedVal.textContent = finalUsed;
+                     updateProgressBar(finalUsed, contextLimit, finalUsed > contextLimit);
 
-                    // Add telemetry elements to the current chat bubble
-                    if (telemetry && telemetry.limit) {
-                        const hasOverflow = telemetry.overflow_occurred === true;
-                        if (hasOverflow) {
-                            aiBubble.classList.add('msg-overflow-recovered');
-                        }
-                        
-                        const footerDiv = document.createElement('div');
-                        footerDiv.className = 'msg-telemetry';
-                        footerDiv.innerHTML = `
-                            <div class="telemetry-badges">
-                                <span class="badge-item ${hasOverflow ? 'recovered' : 'nominal'}">
-                                    ${hasOverflow ? 'RECOVERED' : 'NOMINAL'}
-                                </span>
-                                <span class="badge-item">LIMIT: ${telemetry.limit} TKN</span>
-                                <span class="badge-item">FOOTPRINT: ${telemetry.final_tokens} TKN</span>
-                            </div>
-                            <button class="telemetry-inspect-btn" onclick='viewTelemetryDetails(${JSON.stringify(telemetry)}, ${JSON.stringify(budget)}, "${escapeHtml(query)}")'>
-                                INSPECT
-                            </button>
-                        `;
-                        aiBubble.appendChild(footerDiv);
-                    }
+                     // Add telemetry elements to the current chat bubble
+                     if (telemetry && telemetry.limit) {
+                         const hasOverflow = telemetry.overflow_occurred === true;
+                         if (hasOverflow) {
+                             aiBubble.classList.add('msg-overflow-recovered');
+                         }
+                         
+                         const footerDiv = document.createElement('div');
+                         footerDiv.className = 'msg-telemetry';
+                         footerDiv.innerHTML = `
+                             <div class="telemetry-badges">
+                                 <span class="badge-item ${hasOverflow ? 'recovered' : 'nominal'}">
+                                     ${hasOverflow ? 'RECOVERED' : 'NOMINAL'}
+                                 </span>
+                                 <span class="badge-item">LIMIT: ${telemetry.limit} TKN</span>
+                                 <span class="badge-item">FOOTPRINT: ${telemetry.final_tokens} TKN</span>
+                             </div>
+                             <button type="button" class="telemetry-inspect-btn">
+                                 INSPECT
+                             </button>
+                         `;
+                         const inspectBtn = footerDiv.querySelector('.telemetry-inspect-btn');
+                         if (inspectBtn) {
+                             inspectBtn.addEventListener('click', () => {
+                                 viewTelemetryDetails(telemetry, budget, query);
+                             });
+                         }
+                         aiBubble.appendChild(footerDiv);
+                     }
 
-                    // Render retrieved sources list in sidebar
-                    if (stats.retrieved_context) {
-                        reconWindow.innerHTML = '';
-                        stats.retrieved_context.forEach(hit => {
-                            const item = document.createElement('div');
-                            item.className = 'readout-item';
-                            item.innerHTML = `
-                                ${escapeHtml(hit.text.substring(0, 180))}...
-                                <div class="readout-meta">
-                                    <span>SCORE: ${hit.score.toFixed(4)}</span>
-                                    <span>SRC: ${escapeHtml(hit.source)}</span>
-                                </div>
-                            `;
-                            reconWindow.appendChild(item);
-                        });
-                    } else {
-                        reconWindow.innerHTML = '<div class="readout-empty">No active retrieval context.</div>';
-                    }
+                     // Render retrieved sources list in sidebar
+                     if (stats.retrieved_context) {
+                         reconWindow.innerHTML = '';
+                         stats.retrieved_context.forEach(hit => {
+                             const item = document.createElement('div');
+                             item.className = 'readout-item';
+                             item.innerHTML = `
+                                 ${escapeHtml(hit.text.substring(0, 180))}...
+                                 <div class="readout-meta">
+                                     <span>SCORE: ${hit.score.toFixed(4)}</span>
+                                     <span>SRC: ${escapeHtml(hit.source)}</span>
+                                 </div>
+                             `;
+                             reconWindow.appendChild(item);
+                         });
+                     } else {
+                         reconWindow.innerHTML = '<div class="readout-empty">No active retrieval context.</div>';
+                     }
 
-                    // Map statistics to top performance metrics
-                    statQ.textContent = stats.queries_handled || statQ.textContent;
-                    if (stats.compression_ratio !== undefined) {
-                        statC.textContent = Math.round((1 - stats.compression_ratio) * 100) + '%';
-                    }
-                    statT.textContent = latency + 'ms';
-                    statM.textContent = stats.active_memories || 0;
-                    if (stats.cpu_usage_percent !== undefined)    statCpu.textContent = stats.cpu_usage_percent + '%';
-                    if (stats.memory_usage_percent !== undefined) statRam.textContent = stats.memory_usage_percent + '%';
-                    if (stats.context_used_percent !== undefined)  statCtx.textContent = stats.context_used_percent + '%';
-                    if (stats.exact_tokens) {
-                        const totalTokens = stats.exact_tokens.total;
-                        const durationSec = latency / 1000.0;
-                        statTps.textContent = Math.round(stats.exact_tokens.completion / durationSec) + ' t/s';
-                    }
+                     // Map statistics to top performance metrics
+                     statQ.textContent = stats.queries_handled || statQ.textContent;
+                     if (stats.compression_ratio !== undefined) {
+                         statC.textContent = Math.round((1 - stats.compression_ratio) * 100) + '%';
+                     }
+                     statT.textContent = latency + 'ms';
+                     statM.textContent = stats.active_memories || 0;
+                     if (stats.cpu_usage_percent !== undefined)    statCpu.textContent = stats.cpu_usage_percent + '%';
+                     if (stats.memory_usage_percent !== undefined) statRam.textContent = stats.memory_usage_percent + '%';
+                     if (stats.context_used_percent !== undefined)  statCtx.textContent = stats.context_used_percent + '%';
+                     if (stats.exact_tokens) {
+                         const totalTokens = stats.exact_tokens.total;
+                         const durationSec = latency / 1000.0;
+                         statTps.textContent = Math.round(stats.exact_tokens.completion / durationSec) + ' t/s';
+                     }
 
-                    // Render Glass Box Inspector
-                    const finalData = {
-                        query: query,
-                        tps: statTps.textContent,
-                        query_cost: stats.query_cost || (stats.exact_tokens ? `$${((stats.exact_tokens.prompt * 0.000001) + (stats.exact_tokens.completion * 0.000002)).toFixed(6)}` : "$0.00"),
-                        search_queries: stats.instantaneous_latency_ms ? stats.instantaneous_latency_ms.search_queries : [query],
-                        hyde_doc: stats.hyde_doc || "N/A",
-                        raw_prompt: stats.raw_prompt || "N/A",
-                        stats: stats
-                    };
-                    renderInspector(finalData);
-                }
+                     // Render Glass Box Inspector
+                     const finalData = {
+                         query: query,
+                         tps: statTps.textContent,
+                         query_cost: stats.query_cost || (stats.exact_tokens ? `$${((stats.exact_tokens.prompt * 0.000001) + (stats.exact_tokens.completion * 0.000002)).toFixed(6)}` : "$0.00"),
+                         search_queries: (stats.instantaneous_latency_ms && stats.instantaneous_latency_ms.search_queries) ? stats.instantaneous_latency_ms.search_queries : [query],
+                         hyde_doc: stats.hyde_doc || "N/A",
+                         raw_prompt: stats.raw_prompt || "N/A",
+                         stats: stats
+                     };
+                     renderInspector(finalData);
+                 }
             }
         }
     } catch (err) {
@@ -670,3 +700,51 @@ setInterval(refreshGlobalStats, 15000);
 refreshGlobalStats();
 loadHistory();
 AppState.updateContextLimit(parseInt(contextLimitSlider.value));
+
+// ---- HUD Panel Toggle ----
+const hudToggleBtn = document.getElementById('hud-toggle-btn');
+const mainGrid = document.querySelector('.main-grid');
+
+if (hudToggleBtn && mainGrid) {
+    // Determine initial state based on window width
+    let isCollapsed = window.innerWidth <= 1200;
+    if (isCollapsed) {
+        mainGrid.classList.add('hud-collapsed');
+        hudToggleBtn.innerHTML = `<span>SHOW HUD</span>`;
+        hudToggleBtn.classList.add('hud-hidden-state');
+    }
+
+    hudToggleBtn.addEventListener('click', () => {
+        const width = window.innerWidth;
+        if (width <= 1200) {
+            // On small viewports, toggle hud-visible class
+            mainGrid.classList.toggle('hud-visible');
+            const isVisible = mainGrid.classList.contains('hud-visible');
+            hudToggleBtn.classList.toggle('hud-hidden-state', !isVisible);
+            hudToggleBtn.innerHTML = isVisible ? `<span>HIDE HUD</span>` : `<span>SHOW HUD</span>`;
+            addLog(isVisible ? "System HUD visible in responsive overlay." : "System HUD hidden in responsive overlay.", "SYSTEM");
+        } else {
+            // On large viewports, toggle hud-collapsed class
+            mainGrid.classList.toggle('hud-collapsed');
+            const collapsed = mainGrid.classList.contains('hud-collapsed');
+            hudToggleBtn.classList.toggle('hud-hidden-state', collapsed);
+            hudToggleBtn.innerHTML = collapsed ? `<span>SHOW HUD</span>` : `<span>COLLAPSE HUD</span>`;
+            addLog(collapsed ? "System HUD collapsed." : "System HUD expanded.", "SYSTEM");
+        }
+    });
+
+    // Handle window resize dynamically to sync classes
+    window.addEventListener('resize', () => {
+        const width = window.innerWidth;
+        if (width > 1200) {
+            mainGrid.classList.remove('hud-visible');
+            const collapsed = mainGrid.classList.contains('hud-collapsed');
+            hudToggleBtn.innerHTML = collapsed ? `<span>SHOW HUD</span>` : `<span>COLLAPSE HUD</span>`;
+            hudToggleBtn.classList.toggle('hud-hidden-state', collapsed);
+        } else {
+            const isVisible = mainGrid.classList.contains('hud-visible');
+            hudToggleBtn.innerHTML = isVisible ? `<span>HIDE HUD</span>` : `<span>SHOW HUD</span>`;
+            hudToggleBtn.classList.toggle('hud-hidden-state', !isVisible);
+        }
+    });
+}

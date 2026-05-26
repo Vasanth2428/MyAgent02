@@ -2,12 +2,24 @@ import unittest
 from unittest.mock import MagicMock, patch
 from core.agent import RAGAgent
 
+
+def make_mock_completion(text: str):
+    """Mocks a synchronous chat completion response."""
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message = MagicMock()
+    mock_response.choices[0].message.content = text
+    return mock_response
+
+
 def make_mock_stream(text: str):
+    """Mocks a streaming chat completion response."""
     mock_chunk = MagicMock()
     mock_chunk.choices = [MagicMock()]
     mock_chunk.choices[0].delta = MagicMock()
     mock_chunk.choices[0].delta.content = text
     return [mock_chunk]
+
 
 class TestRAGAgent(unittest.TestCase):
 
@@ -45,13 +57,16 @@ class TestRAGAgent(unittest.TestCase):
         """Tests that greetings exit immediately without invoking LLM completions."""
         events = list(self.agent.run_stream("hello", session_id="test_sess"))
         
-        # Verify first event is the thought detailing early exit
-        self.assertEqual(events[0]["event"], "thought")
-        self.assertIn("simple query or greeting", events[0]["text"])
+        # Verify first event is state change or thought
+        state_event = next(e for e in events if e["event"] == "state_change")
+        self.assertEqual(state_event["state"], "STREAMING_FINAL_RESPONSE")
+        
+        thought_event = next(e for e in events if e["event"] == "thought")
+        self.assertIn("simple query or greeting", thought_event["text"])
         
         # Verify answer chunk event
-        self.assertEqual(events[1]["event"], "answer_chunk")
-        self.assertIn("Hello! How can I help you", events[1]["text"])
+        answer_event = next(e for e in events if e["event"] == "answer_chunk")
+        self.assertIn("Hello! How can I help you", answer_event["text"])
 
     @patch("psutil.cpu_percent")
     @patch("psutil.virtual_memory")
@@ -61,22 +76,16 @@ class TestRAGAgent(unittest.TestCase):
         mock_vm.return_value.percent = 45.0
         self.engine.retriever.get_count.return_value = 100
         
-        # Prepare LLM responses: First step returns Action: get_system_stats, Second step returns Final Answer
+        # ReAct reasoning steps are synchronous (stream=False)
         self.engine.client.chat.completions.create.side_effect = [
-            make_mock_stream("Thought: I need system status.\nAction: get_system_stats[]"),
-            make_mock_stream("Thought: I have the statistics.\nFinal Answer: The CPU is at 12.5%.")
+            make_mock_completion("Thought: I need system status.\nAction: get_system_stats[]"),
+            make_mock_completion("Thought: I have the statistics.\nFinal Answer: The CPU is at 12.5%.")
         ]
         
         events = list(self.agent.run_stream("what are system stats", session_id="test_sess"))
         
-        # Expect events:
-        # 1. Thought: I need system status
-        # 2. Action: get_system_stats
-        # 3. Observation: System Stats:...
-        # 4. Answer chunk: The CPU is at 12.5%
-        # 5. Done
-        
         event_types = [e["event"] for e in events]
+        self.assertIn("state_change", event_types)
         self.assertIn("thought", event_types)
         self.assertIn("action", event_types)
         self.assertIn("observation", event_types)
@@ -94,13 +103,11 @@ class TestRAGAgent(unittest.TestCase):
         self.engine._phase_retrieve.return_value = [{"text": "document secret", "score": 0.9, "source": "docs"}]
         self.engine.compressor.compress.return_value = "compressed secret"
         
-        # Response 1: Action: search
-        # Response 2: Action: search again with same arg
-        # Response 3: Final Answer
+        # ReAct reasoning steps are synchronous
         self.engine.client.chat.completions.create.side_effect = [
-            make_mock_stream("Thought: Searching database.\nAction: search_knowledge_base[secret_key]"),
-            make_mock_stream("Thought: Searching again.\nAction: search_knowledge_base[secret_key]"),
-            make_mock_stream("Thought: Done.\nFinal Answer: Password is secret.")
+            make_mock_completion("Thought: Searching database.\nAction: search_knowledge_base[secret_key]"),
+            make_mock_completion("Thought: Searching again.\nAction: search_knowledge_base[secret_key]"),
+            make_mock_completion("Thought: Done.\nFinal Answer: Password is secret.")
         ]
         
         events = list(self.agent.run_stream("what is the secret password", session_id="test_sess"))
@@ -115,11 +122,11 @@ class TestRAGAgent(unittest.TestCase):
         self.engine._phase_retrieve.return_value = [{"text": "doc content", "score": 0.8, "source": "docs"}]
         self.engine.compressor.compress.return_value = "compressed doc content"
 
-        # Mock completions to return 3 Action steps, forcing exhaustion, and a 4th call for synthesis
+        # ReAct reasoning steps are synchronous, synthesis call is streaming (stream=True)
         self.engine.client.chat.completions.create.side_effect = [
-            make_mock_stream("Thought: Need to look up stats.\nAction: get_system_stats[]"),
-            make_mock_stream("Thought: Need to search.\nAction: search_knowledge_base[query]"),
-            make_mock_stream("Thought: Still thinking.\nAction: get_system_stats[]"),
+            make_mock_completion("Thought: Need to look up stats.\nAction: get_system_stats[]"),
+            make_mock_completion("Thought: Need to search.\nAction: search_knowledge_base[query]"),
+            make_mock_completion("Thought: Still thinking.\nAction: get_system_stats[]"),
             make_mock_stream("Based on my checks, here is the compiled response.")
         ]
         
@@ -167,14 +174,11 @@ class TestRAGAgent(unittest.TestCase):
         mock_vm.return_value.percent = 30.0
         self.engine.retriever.get_count.return_value = 5
         
-        # side_effect:
-        # 1. Malformed response (no Action or Final Answer prefix)
-        # 2. ReAct Action: get_system_stats[]
-        # 3. Final Answer
+        # ReAct reasoning steps are synchronous
         self.engine.client.chat.completions.create.side_effect = [
-            make_mock_stream("Thought: Let's do something without properly formatting it."),
-            make_mock_stream("Thought: Oops, I should use the correct format.\nAction: get_system_stats[]"),
-            make_mock_stream("Thought: I have the stats.\nFinal Answer: System CPU is 10.0%.")
+            make_mock_completion("Thought: Let's do something without properly formatting it."),
+            make_mock_completion("Thought: Oops, I should use the correct format.\nAction: get_system_stats[]"),
+            make_mock_completion("Thought: I have the stats.\nFinal Answer: System CPU is 10.0%.")
         ]
         
         events = list(self.agent.run_stream("tell me system stats", session_id="test_sess"))
@@ -194,7 +198,28 @@ class TestRAGAgent(unittest.TestCase):
         done_event = next(e for e in events if e["event"] == "done")
         self.assertEqual(done_event["response"], "System CPU is 10.0%.")
 
+    def test_parse_action_multiline(self):
+        """Verify the parser handles multiline arguments correctly."""
+        text = "Thought: Let's query.\nAction: search_knowledge_base[line 1\nline 2]"
+        action = self.agent.parse_action(text)
+        self.assertEqual(action, ("search_knowledge_base", "line 1\nline 2"))
+
+    def test_react_loop_case_insensitive_final_answer(self):
+        """Verify the agent streams final answer when prefix uses lowercase."""
+        self.engine.client.chat.completions.create.side_effect = [
+            make_mock_completion("Thought: Done.\nfinal answer: The lowercase answer.")
+        ]
+        
+        events = list(self.agent.run_stream("what is the query", session_id="test_sess"))
+        
+        # Verify answer chunk was streamed
+        answer_chunks = [e["text"] for e in events if e["event"] == "answer_chunk"]
+        self.assertIn("The lowercase answer.", "".join(answer_chunks))
+        
+        # Verify final response is set correctly
+        done_event = next(e for e in events if e["event"] == "done")
+        self.assertEqual(done_event["response"], "The lowercase answer.")
+
 
 if __name__ == "__main__":
     unittest.main()
-

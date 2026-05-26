@@ -483,14 +483,14 @@ class TestRetrieverRobustness(unittest.TestCase):
     @patch('core.retriever.SentenceTransformer')
     @patch('time.sleep')
     def test_weaviate_connection_exhaustion(self, mock_sleep, mock_st, mock_connect):
-        """Verify that connection failure raises exception after max retries."""
+        """Verify that connection failure after max retries still allows retriever to be created in degraded mode."""
         from core.retriever import WeaviateRetriever
         
         mock_connect.side_effect = Exception("Permanent connection error")
         
-        with self.assertRaises(Exception):
-            WeaviateRetriever()
-            
+        # Retriever should be created but in degraded mode (no exception raised)
+        retriever = WeaviateRetriever()
+        self.assertFalse(retriever._connected)
         self.assertEqual(mock_connect.call_count, 3)
         self.assertEqual(mock_sleep.call_count, 2)
 
