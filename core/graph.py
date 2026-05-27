@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, Optional, List, TypedDict
 from langgraph.graph import StateGraph, END
 from core.agent import count_tokens, SYSTEM_PROMPT, mock_web_search
+from core.scraper import scrape_web_page
 
 logger = logging.getLogger("RAG.Graph")
 
@@ -497,6 +498,34 @@ class RAGLangGraph:
                 else:
                     logger.info(f"Executing web_search for: {tool_arg}")
                     observation = mock_web_search(tool_arg)
+                    search_cache[tool_arg] = observation
+            elif tool_name == "web_scrape":
+                if tool_arg in search_cache:
+                    logger.info(f"Search cache hit for: {tool_arg}")
+                    observation = search_cache[tool_arg]
+                else:
+                    logger.info(f"Executing web_scrape for: {tool_arg}")
+                    scraped_text = scrape_web_page(tool_arg)
+                    if scraped_text.startswith("Error:") or scraped_text.startswith("Warning:"):
+                        observation = scraped_text
+                    else:
+                        chunks = [p.strip() for p in scraped_text.split("\n") if len(p.strip()) > 30]
+                        if chunks:
+                            user_query = state.get("query", "")
+                            mem_tokens = count_tokens(memory_text)
+                            doc_budget = max(400, 1500 - mem_tokens)
+                            compressed = self.engine.compressor.compress(
+                                chunks, user_query, max_tokens=doc_budget
+                            )
+                            if compressed.strip():
+                                observation = compressed
+                            else:
+                                text_summary = "\n\n".join(chunks[:6])
+                                if len(text_summary) > 1200:
+                                    text_summary = text_summary[:1200] + "..."
+                                observation = text_summary
+                        else:
+                            observation = scraped_text[:1200]
                     search_cache[tool_arg] = observation
             elif tool_name == "get_registry":
                 observation = self.engine._get_registry_context_text()

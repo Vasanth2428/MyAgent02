@@ -175,5 +175,78 @@ class TestLangGraphAgent(unittest.TestCase):
         res = self.graph.streaming_final_answer(state)
         self.assertTrue(any(e["event"] == "done" for e in res["events_queue"]))
 
+    @patch("core.scraper.requests.get")
+    def test_scrape_web_page_success(self, mock_get):
+        """Test successful fetch and parse of a web page."""
+        mock_response = MagicMock()
+        mock_response.headers = {"Content-Type": "text/html; charset=utf-8"}
+        mock_response.text = (
+            "<html><head><title>Ignored Title</title><style>.css {color: red;}</style></head>"
+            "<body><h1>Important Header</h1><p>Some paragraph text here.</p>"
+            "<script>alert(1);</script></body></html>"
+        )
+        mock_get.return_value = mock_response
+        
+        from core.scraper import scrape_web_page
+        text = scrape_web_page("http://example.com/test")
+        self.assertIn("Important Header", text)
+        self.assertIn("Some paragraph text here.", text)
+        self.assertNotIn("Ignored Title", text)
+        self.assertNotIn("alert(1)", text)
+
+    @patch("core.scraper.requests.get")
+    def test_scrape_web_page_http_error(self, mock_get):
+        """Test that HTTP errors are gracefully captured."""
+        import requests
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Not Found")
+        mock_get.return_value = mock_response
+        
+        from core.scraper import scrape_web_page
+        text = scrape_web_page("http://example.com/missing")
+        self.assertIn("Error: HTTP request failed with status: 404.", text)
+
+    @patch("core.scraper.requests.get")
+    def test_scrape_web_page_timeout(self, mock_get):
+        """Test that timeouts are handled gracefully."""
+        import requests
+        mock_get.side_effect = requests.exceptions.Timeout("Connection timed out")
+        
+        from core.scraper import scrape_web_page
+        text = scrape_web_page("http://example.com/timeout")
+        self.assertIn("timed out", text)
+
+    @patch("core.graph.scrape_web_page")
+    def test_execute_tool_web_scrape(self, mock_scrape):
+        """Test that execute_tool handles the web_scrape tool, runs compressor, and caches outcome."""
+        mock_scrape.return_value = (
+            "This is a long web page content describing Python and RAG development.\n"
+            "Here is another paragraph with specific details about LangGraph framework."
+        )
+        self.engine.compressor.compress.return_value = "Compressed: LangGraph framework"
+        
+        state = {
+            "parsed_action": ("web_scrape", "https://python.org"),
+            "scratchpad": "",
+            "query": "What is LangGraph?",
+            "session_id": "test_scrape",
+            "memory_text": "History",
+            "iteration": 1,
+            "actions_taken": [],
+            "search_cache": {},
+            "events_queue": []
+        }
+        
+        res = self.graph.execute_tool(state)
+        # Check cache was populated
+        self.assertIn("https://python.org", res["search_cache"])
+        self.assertEqual(res["search_cache"]["https://python.org"], "Compressed: LangGraph framework")
+        # Check scratchpad updated
+        self.assertIn("Compressed: LangGraph framework", res["scratchpad"])
+        # Check actions_taken updated
+        self.assertEqual(len(res["actions_taken"]), 1)
+        self.assertEqual(res["actions_taken"][0]["tool"], "web_scrape")
+
 if __name__ == "__main__":
     unittest.main()
