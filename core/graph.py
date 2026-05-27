@@ -101,6 +101,42 @@ class RAGLangGraph:
         
         self.compiled_graph = workflow.compile()
 
+    def _call_llm_with_retry(self, messages: list, temperature: float = 0.0, frequency_penalty: float = 0.0, stream: bool = False, max_retries: int = 3) -> Any:
+        """Calls the Groq LLM client with exponential backoff retry logic for transient errors."""
+        backoff = 0.5  # seconds (small default backoff for responsiveness)
+        last_err = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                if stream:
+                    return self.engine.client.chat.completions.create(
+                        model=self.engine.llm_service.model,
+                        messages=messages,
+                        temperature=temperature,
+                        frequency_penalty=frequency_penalty,
+                        stream=True
+                    )
+                else:
+                    return self.engine.client.chat.completions.create(
+                        model=self.engine.llm_service.model,
+                        messages=messages,
+                        temperature=temperature,
+                        frequency_penalty=frequency_penalty,
+                        stream=False
+                    )
+            except Exception as e:
+                last_err = e
+                err_msg = str(e).lower()
+                is_transient = any(term in err_msg for term in ["429", "503", "rate limit", "timeout", "connection", "api_error", "service unavailable"])
+                if not is_transient or attempt == max_retries:
+                    raise e
+                
+                import random
+                sleep_time = backoff * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
+                logger.warning(f"Groq API call failed (attempt {attempt}/{max_retries}) with: {e}. Retrying in {sleep_time:.2f}s...")
+                time.sleep(sleep_time)
+        if last_err:
+            raise last_err
+
     def early_exit_check(self, state: AgentState) -> dict:
         query = state["query"]
         clean_query = query.lower().strip()
@@ -306,8 +342,7 @@ class RAGLangGraph:
         llm_call_count += 1
         
         try:
-            completion = self.engine.client.chat.completions.create(
-                model=self.engine.llm_service.model,
+            completion = self._call_llm_with_retry(
                 messages=messages,
                 temperature=0.0,
                 frequency_penalty=0.0,
@@ -421,8 +456,29 @@ class RAGLangGraph:
         }
 
     def execute_tool(self, state: AgentState) -> dict:
-        tool_name, tool_arg = state["parsed_action"]
         scratchpad = state["scratchpad"]
+        events_queue = []
+        parsed_action = state.get("parsed_action")
+        
+        if not parsed_action or not isinstance(parsed_action, (list, tuple)) or len(parsed_action) < 2:
+            observation = "Error: Invalid or missing action definition. Your next response must contain a valid tool call."
+            events_queue.append({"event": "observation", "output": observation})
+            return {
+                "scratchpad": scratchpad + f"\nObservation: {observation}",
+                "events_queue": events_queue
+            }
+            
+        tool_name, tool_arg = parsed_action
+        if tool_name:
+            tool_name = tool_name.strip().lower()
+        else:
+            tool_name = ""
+            
+        if tool_arg:
+            tool_arg = tool_arg.strip()
+        else:
+            tool_arg = ""
+            
         raw_response = state.get("raw_response", "")
         iteration = state["iteration"]
         actions_taken = list(state["actions_taken"])
@@ -430,7 +486,6 @@ class RAGLangGraph:
         memory_text = state["memory_text"]
         search_cache = dict(state.get("search_cache", {}))
         
-        events_queue = []
         events_queue.append({"event": "state_change", "state": "EXECUTING_TOOL"})
         
         observation = ""
@@ -515,11 +570,20 @@ class RAGLangGraph:
         events_queue.append({"event": "state_change", "state": "STREAMING_FINAL_RESPONSE"})
         
         chunk_size = 8
-        for i in range(0, len(final_response), chunk_size):
-            events_queue.append({"event": "answer_chunk", "text": final_response[i:i+chunk_size]})
+        if final_response:
+            for i in range(0, len(final_response), chunk_size):
+                events_queue.append({"event": "answer_chunk", "text": final_response[i:i+chunk_size]})
             
-        self.engine.save_memory(session_id, query, "user")
+        try:
+            self.engine.save_memory(session_id, query, "user")
+        except Exception as e:
+            logger.error(f"Failed to save user memory query: {e}")
         
+        try:
+            mem_tokens_used = count_tokens(memory_text)
+        except Exception:
+            mem_tokens_used = 0
+            
         telemetry_data = {
             "query": query,
             "raw_prompt": f"SYSTEM_PROMPT:\n{SYSTEM_PROMPT}\n\nUSER_MESSAGE:\nActive Conversation History:\n{memory_text}\n\nUser Question: {query}",
@@ -529,23 +593,47 @@ class RAGLangGraph:
             "final_tokens": state.get("final_tokens", 0),
             "steps": overflow_steps,
             "budget_tracking": {
-                "memory_tokens_used": count_tokens(memory_text),
+                "memory_tokens_used": mem_tokens_used,
                 "memory_tokens_limit": 1500,
                 "document_tokens_used": 0,
                 "document_tokens_limit": 0
             },
             "compression_ratio": 1.0
         }
-        self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
         
+        try:
+            self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
+        except Exception as e:
+            logger.error(f"Failed to save assistant memory response: {e}")
+        
+        try:
+            queries_handled = self.engine.stats["queries"]
+        except Exception:
+            queries_handled = 0
+            
+        try:
+            active_memories = len(self.engine.get_memory(session_id).entries)
+        except Exception:
+            active_memories = 0
+            
+        try:
+            cpu_usage_percent = psutil.cpu_percent(interval=None)
+        except Exception:
+            cpu_usage_percent = 0.0
+            
+        try:
+            memory_usage_percent = psutil.virtual_memory().percent
+        except Exception:
+            memory_usage_percent = 0.0
+            
         done_event = {"event": "done", "response": final_response, "stats": {
-            "queries_handled": self.engine.stats["queries"],
+            "queries_handled": queries_handled,
             "compression_ratio": 1.0,
-            "active_memories": len(self.engine.get_memory(session_id).entries),
+            "active_memories": active_memories,
             "instantaneous_latency_ms": {"total_execution_ms": 0.0},
             "avg_latency_ms": 0.0,
-            "cpu_usage_percent": psutil.cpu_percent(interval=None),
-            "memory_usage_percent": psutil.virtual_memory().percent,
+            "cpu_usage_percent": cpu_usage_percent,
+            "memory_usage_percent": memory_usage_percent,
             "context_used_percent": 0.0,
             "exact_tokens": {"prompt": 0, "completion": 0, "total": 0},
             "query_cost": "$0.00000000",
@@ -567,6 +655,7 @@ class RAGLangGraph:
         return {
             "events_queue": events_queue
         }
+
 
     def synthesis(self, state: AgentState) -> dict:
         query = state["query"]
@@ -599,8 +688,7 @@ class RAGLangGraph:
         llm_call_count += 1
         final_response = ""
         try:
-            stream = self.engine.client.chat.completions.create(
-                model=self.engine.llm_service.model,
+            stream = self._call_llm_with_retry(
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant. Synthesize a clear final answer based on the provided investigation log."},
                     {"role": "user", "content": synthesis_prompt}
@@ -616,11 +704,46 @@ class RAGLangGraph:
                     events_queue.append({"event": "answer_chunk", "text": delta})
         except Exception as e:
             logger.error(f"Error during final synthesis: {e}")
-            final_response = "I encountered an issue synthesizing the final answer from observations."
-            events_queue.append({"event": "answer_chunk", "text": final_response})
+            fallback_response = (
+                "### Investigation Summary (Fallback)\n\n"
+                "I encountered an issue synthesizing the final response using the LLM model, but here are the key findings from my investigation:\n\n"
+            )
+            if scratchpad:
+                steps = scratchpad.strip().split("\n")
+                for step in steps:
+                    step = step.strip()
+                    if step.startswith("Thought:"):
+                        thought = step[len("Thought:"):].strip()
+                        if thought:
+                            fallback_response += f"- **Analysis**: {thought}\n"
+                    elif step.startswith("Action:"):
+                        action = step[len("Action:"):].strip()
+                        if action:
+                            fallback_response += f"  - *Executed action*: `{action}`\n"
+                    elif step.startswith("Observation:"):
+                        obs = step[len("Observation:"):].strip()
+                        if obs:
+                            if len(obs) > 150:
+                                obs = obs[:150] + "..."
+                            fallback_response += f"  - *Observation result*: {obs}\n"
+            else:
+                fallback_response += "*No detailed observations were recorded during this session.*"
+                
+            final_response = fallback_response
+            chunk_size = 12
+            for i in range(0, len(final_response), chunk_size):
+                events_queue.append({"event": "answer_chunk", "text": final_response[i:i+chunk_size]})
             
-        self.engine.save_memory(session_id, query, "user")
+        try:
+            self.engine.save_memory(session_id, query, "user")
+        except Exception as e:
+            logger.error(f"Failed to save user memory query: {e}")
         
+        try:
+            mem_tokens_used = count_tokens(memory_text)
+        except Exception:
+            mem_tokens_used = 0
+            
         telemetry_data = {
             "query": query,
             "raw_prompt": f"SYSTEM_PROMPT:\n{SYSTEM_PROMPT}\n\nUSER_MESSAGE:\nActive Conversation History:\n{memory_text}\n\nUser Question: {query}",
@@ -630,23 +753,47 @@ class RAGLangGraph:
             "final_tokens": state.get("final_tokens", 0),
             "steps": overflow_steps,
             "budget_tracking": {
-                "memory_tokens_used": count_tokens(memory_text),
+                "memory_tokens_used": mem_tokens_used,
                 "memory_tokens_limit": 1500,
                 "document_tokens_used": 0,
                 "document_tokens_limit": 0
             },
             "compression_ratio": 1.0
         }
-        self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
         
+        try:
+            self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
+        except Exception as e:
+            logger.error(f"Failed to save assistant memory response: {e}")
+        
+        try:
+            queries_handled = self.engine.stats["queries"]
+        except Exception:
+            queries_handled = 0
+            
+        try:
+            active_memories = len(self.engine.get_memory(session_id).entries)
+        except Exception:
+            active_memories = 0
+            
+        try:
+            cpu_usage_percent = psutil.cpu_percent(interval=None)
+        except Exception:
+            cpu_usage_percent = 0.0
+            
+        try:
+            memory_usage_percent = psutil.virtual_memory().percent
+        except Exception:
+            memory_usage_percent = 0.0
+            
         done_event = {"event": "done", "response": final_response, "stats": {
-            "queries_handled": self.engine.stats["queries"],
+            "queries_handled": queries_handled,
             "compression_ratio": 1.0,
-            "active_memories": len(self.engine.get_memory(session_id).entries),
+            "active_memories": active_memories,
             "instantaneous_latency_ms": {"total_execution_ms": 0.0},
             "avg_latency_ms": 0.0,
-            "cpu_usage_percent": psutil.cpu_percent(interval=None),
-            "memory_usage_percent": psutil.virtual_memory().percent,
+            "cpu_usage_percent": cpu_usage_percent,
+            "memory_usage_percent": memory_usage_percent,
             "context_used_percent": 0.0,
             "exact_tokens": {"prompt": 0, "completion": 0, "total": 0},
             "query_cost": "$0.00000000",
