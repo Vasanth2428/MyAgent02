@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List, TypedDict
 from langgraph.graph import StateGraph, END
 from core.agent import count_tokens, SYSTEM_PROMPT, mock_web_search
 from core.scraper import scrape_web_page
+from core.tools import get_current_time, evaluate_math
 
 logger = logging.getLogger("RAG.Graph")
 
@@ -527,6 +528,12 @@ class RAGLangGraph:
                         else:
                             observation = scraped_text[:1200]
                     search_cache[tool_arg] = observation
+            elif tool_name == "get_current_time":
+                logger.info("Executing get_current_time")
+                observation = f"Current Datetime: {get_current_time()}"
+            elif tool_name == "calculator":
+                logger.info(f"Executing calculator for: {tool_arg}")
+                observation = evaluate_math(tool_arg)
             elif tool_name == "get_registry":
                 observation = self.engine._get_registry_context_text()
             elif tool_name == "search_knowledge_base":
@@ -554,7 +561,7 @@ class RAGLangGraph:
             else:
                 observation = (
                     f"Error: Unknown tool '{tool_name}'. "
-                    "Available tools are: web_search[query], get_system_stats[], get_registry[], or direct_response[response]."
+                    "Available tools are: web_search[query], get_system_stats[], get_registry[], direct_response[response], web_scrape[url], get_current_time[], or calculator[expression]."
                 )
         except Exception as tool_err:
             logger.error(f"Agent tool execution error for '{tool_name}': {tool_err}", exc_info=True)

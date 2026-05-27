@@ -73,6 +73,8 @@ Available tools:
 3. get_registry[]: Returns a listing of all indexed documents, files, datasets, databases, schemas, and sources. Use this when users ask "what documents do you contain", "list files", "show me sources", or similar queries about available knowledge.
 4. direct_response[response]: Use this to respond directly to the user for general greetings, chit-chat, or if you can answer using the conversation history alone.
 5. web_scrape[url]: Fetches and extracts the textual content of a specific web URL. Use this to read the details of articles, documentation pages, or web links found via web_search or provided by the user.
+6. get_current_time[]: Returns the current local date and time. Use this when the user asks queries involving relative dates, timestamps, ages, or current schedule checks.
+7. calculator[expression]: Evaluates a secure mathematical expression (numbers and operators: +, -, *, /, //, %, **). Use this for executing any calculations, formulas, or arithmetic operations.
 
 Strict format rules:
 1. ONLY call one tool at a time.

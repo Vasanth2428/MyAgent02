@@ -248,5 +248,61 @@ class TestLangGraphAgent(unittest.TestCase):
         self.assertEqual(len(res["actions_taken"]), 1)
         self.assertEqual(res["actions_taken"][0]["tool"], "web_scrape")
 
+    def test_get_current_time(self):
+        """Test get_current_time returns a valid formatted date-time string."""
+        from core.tools import get_current_time
+        now_str = get_current_time()
+        self.assertEqual(len(now_str), 19)
+        # Check standard format YYYY-MM-DD HH:MM:SS
+        import re
+        self.assertTrue(re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", now_str))
+
+    def test_secure_evaluator_valid(self):
+        """Test SecureEvaluator evaluates valid mathematical operations successfully."""
+        from core.tools import evaluate_math
+        self.assertEqual(evaluate_math("2 + 2"), "4")
+        self.assertEqual(evaluate_math("10 * 3 - 5"), "25")
+        self.assertEqual(evaluate_math("(4 + 8) / 3"), "4")
+        self.assertEqual(evaluate_math("2 ** 5"), "32")
+        self.assertEqual(evaluate_math("-10 + 5"), "-5")
+        self.assertEqual(evaluate_math("10 // 3"), "3")
+        self.assertEqual(evaluate_math("10 % 3"), "1")
+
+    def test_secure_evaluator_invalid_escapes(self):
+        """Test SecureEvaluator rejects dangerous nodes like Call, Attribute, Name, etc."""
+        from core.tools import evaluate_math
+        # Rejects variable names/names
+        self.assertTrue(evaluate_math("x + 1").startswith("Error:"))
+        # Rejects function calls
+        self.assertTrue(evaluate_math("abs(-5)").startswith("Error:"))
+        # Rejects attribute access / commands
+        self.assertTrue(evaluate_math("os.system('dir')").startswith("Error:"))
+        # Rejects empty values
+        self.assertTrue(evaluate_math("").startswith("Error:"))
+        # Rejects exponent lockup attempts
+        self.assertTrue(evaluate_math("2 ** 99999").startswith("Error:"))
+
+    def test_execute_tool_datetime_and_calculator(self):
+        """Test execute_tool node executes get_current_time and calculator correctly."""
+        state_time = {
+            "parsed_action": ("get_current_time", ""),
+            "scratchpad": "",
+            "iteration": 1,
+            "actions_taken": [],
+            "events_queue": []
+        }
+        res_time = self.graph.execute_tool(state_time)
+        self.assertIn("Current Datetime:", res_time["scratchpad"])
+
+        state_calc = {
+            "parsed_action": ("calculator", "3 * (5 + 5)"),
+            "scratchpad": "",
+            "iteration": 1,
+            "actions_taken": [],
+            "events_queue": []
+        }
+        res_calc = self.graph.execute_tool(state_calc)
+        self.assertIn("30", res_calc["scratchpad"])
+
 if __name__ == "__main__":
     unittest.main()
