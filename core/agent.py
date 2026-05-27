@@ -96,6 +96,11 @@ class RAGAgent:
     def __init__(self, engine):
         self.engine = engine
         self.max_iterations = 3
+        self._debug_mode = False
+
+    def enable_debug(self, enabled: bool = True):
+        """Enable/disable debug tracking for LLM calls and goal progression."""
+        self._debug_mode = enabled
 
     def parse_action(self, text: str) -> Optional[tuple]:
         """Parses action from LLM response. E.g. Action: web_search[my query]"""
@@ -248,6 +253,11 @@ class RAGAgent:
         scratchpad = ""
         search_cache = {}
 
+        # Debug tracking (isolated from response stream)
+        llm_call_count = 0
+        goals_set = []  # Goals extracted from thoughts
+        actions_taken = []  # Actions and their outcomes
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Active Conversation History:\n{memory_text}\n\nUser Question: {query}"}
@@ -258,6 +268,7 @@ class RAGAgent:
         any_answer_streamed = False
 
         for iteration in range(self.max_iterations):
+            llm_call_count += 1  # Count each LLM call (reasoning step)
             yield {"event": "state_change", "state": "WAITING_FOR_REASONING"}
             
             # Update messages with scratchpad history
@@ -295,6 +306,12 @@ class RAGAgent:
                 if thought_text and thought_text != last_thought:
                     yield {"event": "thought", "text": thought_text}
                     last_thought = thought_text
+                    # Extract goal: first sentence of thought (typically states the objective)
+                    goal_match = re.search(r'^([^.!?]+)', thought_text)
+                    if goal_match:
+                        goal = goal_match.group(1).strip()
+                        if goal not in goals_set:
+                            goals_set.append(goal)
 
             # Parse Action or Final Answer
             action_info = self.parse_action(response)
@@ -389,6 +406,12 @@ class RAGAgent:
 
                 yield {"event": "observation", "output": observation}
                 scratchpad += f"\nThought: {thought_text}\nAction: {tool_name}[{tool_arg}]\nObservation: {observation}"
+                actions_taken.append({
+                    "step": iteration + 1,
+                    "tool": tool_name, 
+                    "input": tool_arg, 
+                    "observation": observation[:1000]
+                })
 
             else:
                 # If we have iterations left, feed a formatting error observation to self-correct
@@ -426,6 +449,7 @@ class RAGAgent:
             )
             
             yield {"event": "state_change", "state": "STREAMING_FINAL_RESPONSE"}
+            llm_call_count += 1  # Count synthesis LLM call
             try:
                 # Call synthesis in streaming conversational mode (temp=0.7)
                 stream = self.engine.client.chat.completions.create(
@@ -507,5 +531,10 @@ class RAGAgent:
             "raw_prompt": telemetry_data.get("raw_prompt", ""),
             "mode": "agentic",
             "alpha": 0.5,
-            "reranker_peak_score": 0.0
+            "reranker_peak_score": 0.0,
+            "debug_info": {
+                "llm_calls": llm_call_count,
+                "goals_set": goals_set,
+                "actions_taken": actions_taken
+            }
         }}

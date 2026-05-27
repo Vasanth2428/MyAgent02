@@ -209,22 +209,47 @@ function escapeHtml(str) {
 
 // ---- Inspector Panels Renderer ----
 function renderInspector(data) {
-    const tokens  = data.stats?.exact_tokens || { prompt: 0, completion: 0, total: 0 };
     const budget  = data.stats?.budget_tracking || {};
     const latency = data.stats?.instantaneous_latency_ms || {};
 
-    inspectorWindow.innerHTML = `
+    let debugSection = '';
+    if (data.stats?.debug_info) {
+        const dbg = data.stats.debug_info;
+        const goalsHtml = dbg.goals_set.length > 0 
+            ? dbg.goals_set.map((g, i) => `<div class="agent-goal-item">${i+1}. ${escapeHtml(g)}</div>`).join('')
+            : '<div style="color: var(--accent-amber); margin-left: 8px;">No goals recorded</div>';
+        const actionsHtml = dbg.actions_taken.length > 0
+            ? dbg.actions_taken.map((a, i) => `
+                <div class="agent-action-card">
+                    <div class="agent-action-header">
+                        <span class="agent-action-label">STEP ${a.step || i+1}: TOOL: ${escapeHtml(a.tool)}</span>
+                    </div>
+                    <div class="agent-action-content">
+                        <div class="agent-action-field">
+                            <div class="agent-action-field-title">INPUT</div>
+                            <div class="agent-action-field-value">${escapeHtml(a.input || 'N/A').substring(0, 400)}${(a.input && a.input.length > 400) ? '...' : ''}</div>
+                        </div>
+                        <div class="agent-action-field">
+                            <div class="agent-action-field-title">OUTPUT</div>
+                            <div class="agent-action-field-value">${escapeHtml(a.observation || 'N/A').substring(0, 1000)}${(a.observation && a.observation.length > 1000) ? '...' : ''}</div>
+                        </div>
+                    </div>
+                </div>`).join('')
+            : '<div style="color: var(--accent-amber); margin-left: 8px;">No actions taken</div>';
+        debugSection = `
         <div class="inspector-section">
-            <div class="inspector-section-hdr">EXACT TOKEN FOOTPRINT</div>
-            <div class="inspector-section-body">
-PROMPT: ${tokens.prompt} TKN
-COMPLETION: ${tokens.completion} TKN
-TOTAL: ${tokens.total} TKN
-
-GENERATION SPEED: ${data.tps || 0} t/s
-ESTIMATED COST: ${data.query_cost || '$0.00'}
+            <div class="inspector-section-hdr">AGENTIC DEBUG INFO</div>
+            <div class="inspector-section-body" style="font-family: var(--font-mono); font-size: 0.7rem;">
+                <div style="margin-bottom: 6px;">LLM CALLS: ${dbg.llm_calls}</div>
+                <div style="margin-bottom: 6px;">GOALS SET:</div>
+                ${goalsHtml}
+                <div style="margin-top: 6px; margin-bottom: 4px;">ACTIONS TAKEN:</div>
+                ${actionsHtml}
             </div>
-        </div>
+        </div>`;
+    }
+
+    inspectorWindow.innerHTML = `
         <div class="inspector-section">
             <div class="inspector-section-hdr">BUDGET ALLOCATION</div>
             <div class="inspector-section-body">
@@ -256,6 +281,7 @@ HYDE GENERATION: ${latency.phase_1_5_hyde_ms || 0} ms
             <div class="inspector-section-hdr">RAW PROMPT INSPECTION</div>
             <div class="inspector-section-body" style="font-family: var(--font-mono); font-size: 0.65rem; max-height: 160px; overflow-y: auto; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.03); white-space: pre-wrap; word-break: break-all;">${escapeHtml(data.raw_prompt || 'N/A')}</div>
         </div>
+        ${debugSection}
     `;
 }
 

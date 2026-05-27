@@ -1254,6 +1254,75 @@ input:focus + .input-glow {
         .main-grid.hud-visible .sidebar-right {
             width: 80% !important;
             max-width: 320px !important;
-        }
     }
 }
+
+/* ---- Agent Actions Taken Inspector Styling ---- */
+.agent-action-card {
+    border-left: 2px solid var(--accent-green);
+    padding-left: 8px;
+    margin-left: 6px;
+    margin-bottom: 10px;
+    font-size: 0.68rem;
+    background: rgba(0, 230, 118, 0.02);
+    border-top: 1px solid rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    border-right: 1px solid rgba(255, 255, 255, 0.02);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding-top: 4px;
+    padding-bottom: 4px;
+}
+
+.agent-action-header {
+    font-weight: 700;
+    color: var(--accent-green);
+    margin-bottom: 4px;
+}
+
+.agent-action-label {
+    font-family: var(--font-brand);
+    letter-spacing: 0.05em;
+    font-size: 0.65rem;
+}
+
+.agent-action-content {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.agent-action-field {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: var(--radius-sm);
+    padding: 4px 6px;
+    font-family: var(--font-mono);
+}
+
+.agent-action-field-title {
+    color: var(--text-muted);
+    font-size: 0.55rem;
+    font-weight: bold;
+    margin-bottom: 2px;
+    text-transform: uppercase;
+}
+
+.agent-action-field-value {
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.agent-goal-item {
+    color: var(--accent-blue);
+    margin-left: 8px;
+    margin-bottom: 4px;
+    font-size: 0.68rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
