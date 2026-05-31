@@ -33,10 +33,11 @@ from typing import Literal, Optional
 from pypdf import PdfReader
 from dotenv import load_dotenv
 
-from core.config import CHUNK_SIZE, CHUNK_OVERLAP
+from core.config import CHUNK_SIZE, CHUNK_OVERLAP, PipelineConfig
 from core.retriever import WeaviateRetriever
 from core.engine import RAGContextEngine
 from core.splitter import RecursiveCharacterSplitter
+from core.scraper import close_aiohttp_session
 
 # Load environment variables
 load_dotenv()
@@ -79,7 +80,9 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("Starting Modular RAG Context Engine...")
         retriever = WeaviateRetriever()
-        rag = RAGContextEngine(retriever)
+        pipeline_config = PipelineConfig.from_env()
+        logger.info(f"Pipeline config: hyde={pipeline_config.enable_hyde}, expansion={pipeline_config.enable_expansion}, reranking={pipeline_config.enable_reranking}, compression={pipeline_config.enable_compression}")
+        rag = RAGContextEngine(retriever, pipeline_config)
         logger.info("RAG Engine successfully initialized.")
         try:
             summary = rag.registry.get_registry_summary()
@@ -95,6 +98,10 @@ async def lifespan(app: FastAPI):
         if rag:
             logger.info("Shutting down RAG Engine...")
             rag.close()
+        try:
+            asyncio.get_event_loop().create_task(close_aiohttp_session())
+        except Exception:
+            pass
 
 
 # Initialize FastAPI App
@@ -153,8 +160,7 @@ async def query_rag(request: QueryRequest):
         raise HTTPException(status_code=500, detail="Engine not ready")
     try:
         logger.info(f"Query from session {request.session_id}: {request.question[:50]}...")
-        result = await asyncio.to_thread(
-            rag.ask,
+        result = await rag.ask_async(
             request.question,
             session_id=request.session_id,
             mode=request.mode,
@@ -181,35 +187,14 @@ async def query_rag_stream(request: QueryRequest):
         import json
         try:
             logger.info(f"Stream Query from session {request.session_id}: {request.question[:50]}...")
-            loop = asyncio.get_event_loop()
-            
-            def run_sync_gen(queue):
-                try:
-                    for event in rag.ask_stream(
-                        request.question,
-                        session_id=request.session_id,
-                        mode=request.mode,
-                        source_filter=request.source_filter,
-                        context_limit=request.context_limit
-                    ):
-                        loop.call_soon_threadsafe(queue.put_nowait, event)
-                    loop.call_soon_threadsafe(queue.put_nowait, None)
-                except Exception as e:
-                    loop.call_soon_threadsafe(queue.put_nowait, {"event": "error", "message": str(e)})
-                    loop.call_soon_threadsafe(queue.put_nowait, None)
-
-            queue = asyncio.Queue()
-            loop.run_in_executor(None, run_sync_gen, queue)
-
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                if isinstance(event, dict) and event.get("event") == "error":
-                    yield f"data: {json.dumps(event)}\n\n"
-                    break
+            async for event in rag.ask_stream_async(
+                request.question,
+                session_id=request.session_id,
+                mode=request.mode,
+                source_filter=request.source_filter,
+                context_limit=request.context_limit
+            ):
                 yield f"data: {json.dumps(event)}\n\n"
-                
         except asyncio.CancelledError:
             logger.warning(f"Client disconnected from query stream for session {request.session_id}.")
         except Exception as e:
@@ -217,6 +202,7 @@ async def query_rag_stream(request: QueryRequest):
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 
 @app.post("/upload")

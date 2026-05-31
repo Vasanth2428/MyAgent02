@@ -6,7 +6,7 @@ This module manages the connection to Weaviate Cloud and implements:
 - Vector Indexing (with deterministic UUIDs)
 - Hybrid Search (Vector + BM25 with dynamic alpha)
 - Metadata Filtering
-- Local Embedding Generation
+- Local Embedding Generation (lazy-loaded)
 """
 
 import os
@@ -18,15 +18,13 @@ import random
 import weaviate
 import weaviate.classes as wvc
 from weaviate.classes.init import Auth
-from sentence_transformers import SentenceTransformer
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import weaviate.exceptions
 
 from core.config import EMBEDDING_MODEL, HYBRID_ALPHA_DEFAULT, HYBRID_ALPHA_KEYWORD
 
 logger = logging.getLogger("RAG.Retriever")
 
-# Technical keywords that signal a query should favor BM25 keyword matching
 _TECHNICAL_KEYWORDS = [
     "error", "exception", "status", "syntax", "null", "none",
     "def ", "class ", "import ", "void", "public", "private",
@@ -46,37 +44,34 @@ class WeaviateRetriever:
         self.collection = None
         self._connected = False
 
-        # Connect to Weaviate Cloud with extended timeouts for stability
         config = wvc.init.AdditionalConfig(
             timeout=wvc.init.Timeout(init=60, query=120, insert=120)
         )
 
-        max_conn_retries = 3
-        conn_base_delay = 1.0
-        for attempt in range(max_conn_retries):
-            try:
-                self.client = weaviate.connect_to_weaviate_cloud(
-                    cluster_url=self.url,
-                    auth_credentials=Auth.api_key(self.api_key),
-                    additional_config=config
-                )
-                self._connected = True
-                break
-            except Exception as e:
-                if attempt == max_conn_retries - 1:
-                    logger.error(f"Failed to connect to Weaviate Cloud after {max_conn_retries} attempts: {e}")
-                    self._connected = False
-                    logger.warning("Starting in degraded mode - database operations will fail gracefully.")
-                else:
-                    delay = conn_base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(
-                        f"Connection attempt {attempt+1} failed: {e}. "
-                        f"Retrying in {delay:.2f}s..."
-                    )
-                    time.sleep(delay)
+        from core.retry import retry
+
+        @retry(
+            retries=3,
+            backoff=1.0,
+            jitter=0.5,
+            logger_name="RAG.Retriever"
+        )
+        def _connect():
+            return weaviate.connect_to_weaviate_cloud(
+                cluster_url=self.url,
+                auth_credentials=Auth.api_key(self.api_key),
+                additional_config=config
+            )
+
+        try:
+            self.client = _connect()
+            self._connected = True
+        except Exception as e:
+            logger.error(f"Failed to connect to Weaviate Cloud after 3 attempts: {e}")
+            self._connected = False
+            logger.warning("Starting in degraded mode - database operations will fail gracefully.")
 
         if self.client and self._connected:
-            # Ensure the collection schema is initialized
             if not self.client.collections.exists("RAGKnowledge"):
                 logger.info("Initializing 'RAGKnowledge' collection...")
                 self.client.collections.create(
@@ -86,93 +81,125 @@ class WeaviateRetriever:
                         wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="tags", data_type=wvc.config.DataType.TEXT_ARRAY),
                         wvc.config.Property(name="source", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="content_hash", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="upload_timestamp", data_type=wvc.config.DataType.NUMBER),
+                        wvc.config.Property(name="document_id", data_type=wvc.config.DataType.TEXT),
                     ]
                 )
 
             self.collection = self.client.collections.get("RAGKnowledge")
-        
-        self.alpha = HYBRID_ALPHA_DEFAULT
 
-        # Load local embedding model
-        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        self.alpha = HYBRID_ALPHA_DEFAULT
+        self._embedding_model: Optional["SentenceTransformer"] = None
+
+    def _get_embedding_model(self):
+        if self._embedding_model is None:
+            logger.info(f"Lazy-loading embedding model: {EMBEDDING_MODEL}")
+            from sentence_transformers import SentenceTransformer
+            self._embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        return self._embedding_model
+
+    @property
+    def embedding_model(self):
+        return self._get_embedding_model()
 
     def execute_with_retry(self, func, *args, **kwargs):
         """
         Executes a Weaviate client operation with automatic retries on transient errors.
         """
-        max_retries = 3
-        base_delay = 0.5
-        for attempt in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except (
-                weaviate.exceptions.WeaviateConnectionError,
-                weaviate.exceptions.UnexpectedStatusCodeError,
-                weaviate.exceptions.WeaviateQueryError,
-                Exception
-            ) as e:
-                err_name = type(e).__name__
-                err_msg = str(e).lower()
-                is_transient = any(
-                    x in err_msg 
-                    for x in ["timeout", "connection", "rate limit", "429", "502", "503", "504", "unavailable", "network"]
-                )
-                if hasattr(e, "status_code"):
-                    if e.status_code == 429 or (e.status_code and e.status_code >= 500):
-                        is_transient = True
-                
-                if not is_transient:
-                    raise
+        def is_weaviate_transient(e):
+            err_msg = str(e).lower()
+            is_t = any(
+                x in err_msg 
+                for x in ["timeout", "connection", "rate limit", "429", "502", "503", "504", "unavailable", "network"]
+            )
+            if hasattr(e, "status_code"):
+                if e.status_code == 429 or (e.status_code and e.status_code >= 500):
+                    is_t = True
+            return is_t
 
-                
-                if attempt == max_retries - 1:
-                    logger.error(f"Weaviate operation failed after {max_retries} attempts: {e}")
-                    raise
-                
-                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.1)
-                logger.warning(
-                    f"Weaviate operation failed with {err_name}: {e}. "
-                    f"Retrying in {delay:.2f}s (Attempt {attempt+1}/{max_retries})...."
-                )
-                time.sleep(delay)
+        from core.retry import retry
+        wrapped = retry(
+            retries=3,
+            backoff=0.5,
+            jitter=0.1,
+            is_transient_fn=is_weaviate_transient,
+            logger_name="RAG.Retriever"
+        )(func)
+        return wrapped(*args, **kwargs)
 
-    def add_documents(self, docs: List[str], tags: List[str] = None, source: str = "unknown"):
+    def add_documents(self, docs: List[str], tags: List[str] = None, source: str = "unknown", document_id: str = None):
         """
         Processes and indexes document chunks into Weaviate.
         Uses deterministic UUIDs to prevent duplicate entries of the same text.
+        
+        Args:
+            docs: List of document text chunks to index.
+            tags: Optional list of tags for categorization.
+            source: Source document name for tracking.
+            document_id: Optional unique document ID for lifecycle tracking.
+        
+        Returns:
+            List of indexed document UUIDs for tracking.
         """
         if not self._connected:
             logger.warning(f"Weaviate not connected - skipping document indexing for: {source}")
-            return
-        
+            return []
+
         t_start = time.time()
+        
+        # Compute content hash for integrity tracking
+        import hashlib
+        content_hash = hashlib.sha256(",".join(docs).encode()).hexdigest()[:16]
 
         embeddings = self.embedding_model.encode(docs)
         t_embed = time.time()
         logger.debug(f"Generated {len(docs)} embeddings in {(t_embed - t_start)*1000:.1f}ms")
 
+        indexed_uuids = []
+        doc_upload_time = time.time()
+
         def _batch_insert():
             with self.collection.batch.dynamic() as batch:
                 for i, doc in enumerate(docs):
-                    doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, doc)
+                    # Use document_id in UUID if provided for version tracking
+                    if document_id:
+                        chunk_id = f"{document_id}_{i}"
+                        doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id)
+                    else:
+                        doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, doc)
+                    
+                    indexed_uuids.append(str(doc_id))
+                    
+                    # Enhanced properties with lifecycle metadata
+                    properties = {
+                        "text": doc, 
+                        "tags": tags or [], 
+                        "source": source,
+                        "content_hash": content_hash,
+                        "upload_timestamp": doc_upload_time,
+                        "document_id": document_id or str(doc_id),
+                    }
+                    
                     batch.add_object(
-                        properties={"text": doc, "tags": tags or [], "source": source},
+                        properties=properties,
                         vector=embeddings[i].tolist() if hasattr(embeddings[i], "tolist") else embeddings[i],
                         uuid=doc_id
                     )
-            failed = self.collection.batch.failed_objects
-            if failed:
-                raise weaviate.exceptions.WeaviateQueryError(
-                    f"Weaviate batch insert failed for {len(failed)} objects. First error: {failed[0].message}"
-                )
+                failed = self.collection.batch.failed_objects
+                if failed:
+                    raise weaviate.exceptions.WeaviateQueryError(
+                        f"Weaviate batch insert failed for {len(failed)} objects. First error: {failed[0].message}"
+                    )
 
         self.execute_with_retry(_batch_insert)
 
         t_batch = time.time()
         logger.info(
-            f"Indexed {len(docs)} chunks from '{source}' in {(t_batch - t_start)*1000:.1f}ms "
+            f"Indexed {len(docs)} chunks from '{source}' (doc_id={document_id}) in {(t_batch - t_start)*1000:.1f}ms "
             f"(Embed: {(t_embed - t_start)*1000:.1f}ms, Insert: {(t_batch - t_embed)*1000:.1f}ms)"
         )
+        return indexed_uuids
 
     def _detect_alpha(self, query: str) -> float:
         """
@@ -184,24 +211,22 @@ class WeaviateRetriever:
             return HYBRID_ALPHA_KEYWORD
         return HYBRID_ALPHA_DEFAULT
 
-    def retrieve(self, query: str, top_k: int = 5, source_filter: str = None) -> List[Dict]:
+    def retrieve(self, query: str, top_k: int = 5, source_filter: str = None) -> Tuple[List[Dict], float, float]:
         """
         Performs a Hybrid Search (Semantic + Keyword) with optional hard filtering.
+        Returns:
+            Tuple of (results, embed_latency_ms, db_search_latency_ms)
         """
         if not self._connected:
             logger.warning(f"Weaviate not connected - returning empty results for query: {query[:30]}...")
-            self.last_embed_latency_ms = 0.0
-            self.last_search_latency_ms = 0.0
-            return []
-        
+            return [], 0.0, 0.0
+
         t_start = time.time()
         query_vector = self.embedding_model.encode(query).tolist()
         t_embed = time.time()
 
-        # Construct property filter
         filters = wvc.query.Filter.by_property("source").equal(source_filter) if source_filter else None
 
-        # Dynamically classify query type
         alpha = self._detect_alpha(query)
         self.alpha = alpha
 
@@ -212,28 +237,30 @@ class WeaviateRetriever:
                 alpha=alpha,
                 limit=top_k,
                 filters=filters,
-                return_properties=["text", "tags", "source"],
+                return_properties=["text", "tags", "source", "content_hash", "document_id"],
                 return_metadata=wvc.query.MetadataQuery(score=True)
             )
 
         response = self.execute_with_retry(_query_db)
 
         t_search = time.time()
-        self.last_embed_latency_ms = (t_embed - t_start) * 1000
-        self.last_search_latency_ms = (t_search - t_embed) * 1000
+        embed_latency_ms = (t_embed - t_start) * 1000
+        search_latency_ms = (t_search - t_embed) * 1000
 
         res = [{
             "text": obj.properties["text"],
             "tags": obj.properties.get("tags") or [],
             "source": obj.properties.get("source"),
-            "score": obj.metadata.score
+            "score": obj.metadata.score,
+            "content_hash": obj.properties.get("content_hash"),
+            "document_id": obj.properties.get("document_id"),
         } for obj in response.objects]
 
         logger.info(
             f"Hybrid search (alpha={alpha}) found {len(res)} results "
             f"in {(t_search - t_start)*1000:.1f}ms"
         )
-        return res
+        return res, embed_latency_ms, search_latency_ms
 
     def get_count(self) -> int:
         """Returns the total number of objects in the RAGKnowledge collection."""

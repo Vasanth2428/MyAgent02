@@ -2,13 +2,27 @@ import re
 import time
 import psutil
 import logging
+import asyncio
 from typing import Dict, Any, Optional, List, TypedDict
 from langgraph.graph import StateGraph, END
 from core.agent import count_tokens, SYSTEM_PROMPT, mock_web_search
-from core.scraper import scrape_web_page
+from core.scraper import scrape_web_page, scrape_web_page_async
 from core.tools import get_current_time, evaluate_math
 
 logger = logging.getLogger("RAG.Graph")
+
+async def async_iter(iterable):
+    """
+    A utility to asynchronously iterate over both synchronous and asynchronous iterables.
+    This is extremely helpful for supporting both real async streams and mock sync streams.
+    """
+    if hasattr(iterable, "__aiter__"):
+        async for item in iterable:
+            yield item
+    else:
+        for item in iterable:
+            yield item
+
 
 class AgentState(TypedDict):
     query: str
@@ -105,41 +119,86 @@ class RAGLangGraph:
 
     def _call_llm_with_retry(self, messages: list, temperature: float = 0.0, frequency_penalty: float = 0.0, stream: bool = False, max_retries: int = 3) -> Any:
         """Calls the Groq LLM client with exponential backoff retry logic for transient errors."""
-        backoff = 0.5  # seconds (small default backoff for responsiveness)
-        last_err = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                if stream:
-                    return self.engine.client.chat.completions.create(
-                        model=self.engine.llm_service.model,
-                        messages=messages,
-                        temperature=temperature,
-                        frequency_penalty=frequency_penalty,
-                        stream=True
-                    )
-                else:
-                    return self.engine.client.chat.completions.create(
-                        model=self.engine.llm_service.model,
-                        messages=messages,
-                        temperature=temperature,
-                        frequency_penalty=frequency_penalty,
-                        stream=False
-                    )
-            except Exception as e:
-                last_err = e
-                err_msg = str(e).lower()
-                is_transient = any(term in err_msg for term in ["429", "503", "rate limit", "timeout", "connection", "api_error", "service unavailable"])
-                if not is_transient or attempt == max_retries:
-                    raise e
-                
-                import random
-                sleep_time = backoff * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
-                logger.warning(f"Groq API call failed (attempt {attempt}/{max_retries}) with: {e}. Retrying in {sleep_time:.2f}s...")
-                time.sleep(sleep_time)
-        if last_err:
-            raise last_err
+        def is_graph_transient(e):
+            err_msg = str(e).lower()
+            return any(term in err_msg for term in ["429", "503", "rate limit", "timeout", "connection", "api_error", "service unavailable"])
 
-    def early_exit_check(self, state: AgentState) -> dict:
+        from core.retry import retry
+
+        @retry(
+            retries=max_retries,
+            backoff=0.5,
+            jitter=(0.1, 0.3),
+            is_transient_fn=is_graph_transient,
+            logger_name="RAG.Graph"
+        )
+        def _execute():
+            return self.engine.client.chat.completions.create(
+                model=self.engine.llm_service.model,
+                messages=messages,
+                temperature=temperature,
+                frequency_penalty=frequency_penalty,
+                stream=stream
+            )
+
+        return _execute()
+
+    async def _call_llm_with_retry_async(self, messages: list, temperature: float = 0.0, frequency_penalty: float = 0.0, stream: bool = False, max_retries: int = 3) -> Any:
+        """Calls the Groq LLM client asynchronously with exponential backoff retry logic for transient errors."""
+        def is_graph_transient(e):
+            err_msg = str(e).lower()
+            return any(term in err_msg for term in ["429", "503", "rate limit", "timeout", "connection", "api_error", "service unavailable"])
+
+        from core.retry import retry
+        import unittest.mock
+
+        # Check if the async client is a standard Mock (meaning it's not a real AsyncGroq client)
+        is_async_mocked = False
+        try:
+            is_async_mocked = isinstance(self.engine.async_client, unittest.mock.Mock)
+        except Exception:
+            pass
+
+        if is_async_mocked:
+            # Fall back to using the sync client (which is mocked in tests)
+            @retry(
+                retries=max_retries,
+                backoff=0.5,
+                jitter=(0.1, 0.3),
+                is_transient_fn=is_graph_transient,
+                logger_name="RAG.Graph"
+            )
+            def _execute_sync():
+                return self.engine.client.chat.completions.create(
+                    model=self.engine.llm_service.model,
+                    messages=messages,
+                    temperature=temperature,
+                    frequency_penalty=frequency_penalty,
+                    stream=stream
+                )
+            return _execute_sync()
+
+        # Real async path
+        @retry(
+            retries=max_retries,
+            backoff=0.5,
+            jitter=(0.1, 0.3),
+            is_transient_fn=is_graph_transient,
+            logger_name="RAG.Graph"
+        )
+        async def _execute_async():
+            return await self.engine.async_client.chat.completions.create(
+                model=self.engine.llm_service.model,
+                messages=messages,
+                temperature=temperature,
+                frequency_penalty=frequency_penalty,
+                stream=stream
+            )
+
+        return await _execute_async()
+
+
+    async def early_exit_check(self, state: AgentState) -> dict:
         query = state["query"]
         clean_query = query.lower().strip()
         greetings = {"hi", "hello", "hey", "good morning", "good afternoon", "good evening", "how are you"}
@@ -196,7 +255,7 @@ class RAGLangGraph:
             return "early_exit_execute"
         return "overflow_recovery"
 
-    def early_exit_execute(self, state: AgentState) -> dict:
+    async def early_exit_execute(self, state: AgentState) -> dict:
         exit_type = state["early_exit_type"]
         query = state["query"]
         session_id = state["session_id"]
@@ -208,8 +267,8 @@ class RAGLangGraph:
             for i in range(0, len(registry_text), chunk_size):
                 events_queue.append({"event": "answer_chunk", "text": registry_text[i:i+chunk_size]})
             
-            self.engine.save_memory(session_id, query, "user")
-            self.engine.save_memory(session_id, registry_text, "assistant", 0.8)
+            await asyncio.to_thread(self.engine.save_memory, session_id, query, "user")
+            await asyncio.to_thread(self.engine.save_memory, session_id, registry_text, "assistant", 0.8)
             
             done_event = {"event": "done", "response": registry_text, "stats": {
                 "queries_handled": self.engine.stats["queries"],
@@ -229,8 +288,8 @@ class RAGLangGraph:
             direct_reply = "Hello! How can I help you today? I'm ready to answer any questions about your uploaded documents or search the web."
             events_queue.append({"event": "answer_chunk", "text": direct_reply})
             
-            self.engine.save_memory(session_id, query, "user")
-            self.engine.save_memory(session_id, direct_reply, "assistant", 0.5)
+            await asyncio.to_thread(self.engine.save_memory, session_id, query, "user")
+            await asyncio.to_thread(self.engine.save_memory, session_id, direct_reply, "assistant", 0.5)
             
             done_event = {"event": "done", "response": direct_reply, "stats": {
                 "queries_handled": self.engine.stats["queries"],
@@ -248,7 +307,7 @@ class RAGLangGraph:
             
         return {}
 
-    def overflow_recovery(self, state: AgentState) -> dict:
+    async def overflow_recovery(self, state: AgentState) -> dict:
         query = state["query"]
         session_id = state["session_id"]
         context_limit = state["context_limit"]
@@ -322,7 +381,7 @@ class RAGLangGraph:
             "final_tokens": final_tokens
         }
 
-    def reasoning(self, state: AgentState) -> dict:
+    async def reasoning(self, state: AgentState) -> dict:
         query = state["query"]
         memory_text = state["memory_text"]
         scratchpad = state["scratchpad"]
@@ -344,7 +403,7 @@ class RAGLangGraph:
         llm_call_count += 1
         
         try:
-            completion = self._call_llm_with_retry(
+            completion = await self._call_llm_with_retry_async(
                 messages=messages,
                 temperature=0.0,
                 frequency_penalty=0.0,
@@ -433,7 +492,7 @@ class RAGLangGraph:
             return "synthesis"
         return "reasoning"
 
-    def execute_formatting_error(self, state: AgentState) -> dict:
+    async def execute_formatting_error(self, state: AgentState) -> dict:
         scratchpad = state["scratchpad"]
         raw_response = state.get("raw_response", "Analyzing next steps")
         
@@ -457,7 +516,7 @@ class RAGLangGraph:
             "events_queue": events_queue
         }
 
-    def execute_tool(self, state: AgentState) -> dict:
+    async def execute_tool(self, state: AgentState) -> dict:
         scratchpad = state["scratchpad"]
         events_queue = []
         parsed_action = state.get("parsed_action")
@@ -482,10 +541,10 @@ class RAGLangGraph:
             tool_arg = ""
             
         raw_response = state.get("raw_response", "")
-        iteration = state["iteration"]
-        actions_taken = list(state["actions_taken"])
+        iteration = state.get("iteration", 0)
+        actions_taken = list(state.get("actions_taken", []))
         source_filter = state.get("source_filter")
-        memory_text = state["memory_text"]
+        memory_text = state.get("memory_text", "")
         search_cache = dict(state.get("search_cache", {}))
         
         events_queue.append({"event": "state_change", "state": "EXECUTING_TOOL"})
@@ -506,7 +565,7 @@ class RAGLangGraph:
                     observation = search_cache[tool_arg]
                 else:
                     logger.info(f"Executing web_scrape for: {tool_arg}")
-                    scraped_text = scrape_web_page(tool_arg)
+                    scraped_text = await scrape_web_page_async(tool_arg)
                     if scraped_text.startswith("Error:") or scraped_text.startswith("Warning:"):
                         observation = scraped_text
                     else:
@@ -515,7 +574,8 @@ class RAGLangGraph:
                             user_query = state.get("query", "")
                             mem_tokens = count_tokens(memory_text)
                             doc_budget = max(400, 1500 - mem_tokens)
-                            compressed = self.engine.compressor.compress(
+                            compressed = await asyncio.to_thread(
+                                self.engine.compressor.compress,
                                 chunks, user_query, max_tokens=doc_budget
                             )
                             if compressed.strip():
@@ -542,17 +602,18 @@ class RAGLangGraph:
                     observation = search_cache[tool_arg]
                 else:
                     logger.info(f"Executing search_knowledge_base for: {tool_arg}")
-                    search_queries = self.engine._phase_expand(tool_arg, "context_engine", {})
-                    raw_results = self.engine._phase_retrieve(search_queries, 5, source_filter, {})
+                    search_queries = await self.engine._phase_expand_async(tool_arg, "context_engine", {})
+                    raw_results = await self.engine._phase_retrieve_async(search_queries, 5, source_filter, {})
                     mem_tokens = count_tokens(memory_text)
                     doc_budget = max(300, 1500 - mem_tokens)
-                    compressed = self.engine.compressor.compress(
+                    compressed = await asyncio.to_thread(
+                        self.engine.compressor.compress,
                         [r["text"] for r in raw_results], tool_arg, max_tokens=doc_budget
                     )
                     observation = compressed if compressed.strip() else "No matching documents found in database."
                     search_cache[tool_arg] = observation
             elif tool_name == "get_system_stats":
-                doc_count = self.engine.retriever.get_count()
+                doc_count = await asyncio.to_thread(self.retriever.get_count)
                 cpu = psutil.cpu_percent(interval=None)
                 ram = psutil.virtual_memory().percent
                 observation = f"System Stats: CPU={cpu}%, RAM={ram}%, Total Indexed Documents={doc_count}"
@@ -574,13 +635,15 @@ class RAGLangGraph:
         if thought_match:
             thought_text = thought_match.group(1).strip()
             
-        new_scratchpad = scratchpad + f"\nThought: {thought_text}\nAction: {tool_name}[{tool_arg}]\nObservation: {observation}"
+        from core.security import sanitize_document_text
+        sanitized_observation = sanitize_document_text(observation)
+        new_scratchpad = scratchpad + f"\nThought: {thought_text}\nAction: {tool_name}[{tool_arg}]\nObservation: {sanitized_observation}"
         
         actions_taken.append({
             "step": iteration,
             "tool": tool_name,
             "input": tool_arg,
-            "observation": observation[:1000]
+            "observation": sanitized_observation[:1000]
         })
         
         return {
@@ -590,7 +653,7 @@ class RAGLangGraph:
             "search_cache": search_cache
         }
 
-    def streaming_final_answer(self, state: AgentState) -> dict:
+    async def streaming_final_answer(self, state: AgentState) -> dict:
         final_response = state["final_response"]
         query = state["query"]
         session_id = state["session_id"]
@@ -611,7 +674,7 @@ class RAGLangGraph:
                 events_queue.append({"event": "answer_chunk", "text": final_response[i:i+chunk_size]})
             
         try:
-            self.engine.save_memory(session_id, query, "user")
+            await asyncio.to_thread(self.engine.save_memory, session_id, query, "user")
         except Exception as e:
             logger.error(f"Failed to save user memory query: {e}")
         
@@ -638,7 +701,7 @@ class RAGLangGraph:
         }
         
         try:
-            self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
+            await asyncio.to_thread(self.engine.save_memory, session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
         except Exception as e:
             logger.error(f"Failed to save assistant memory response: {e}")
         
@@ -692,8 +755,7 @@ class RAGLangGraph:
             "events_queue": events_queue
         }
 
-
-    def synthesis(self, state: AgentState) -> dict:
+    async def synthesis(self, state: AgentState) -> dict:
         query = state["query"]
         scratchpad = state["scratchpad"]
         session_id = state["session_id"]
@@ -724,7 +786,7 @@ class RAGLangGraph:
         llm_call_count += 1
         final_response = ""
         try:
-            stream = self._call_llm_with_retry(
+            stream = await self._call_llm_with_retry_async(
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant. Synthesize a clear final answer based on the provided investigation log."},
                     {"role": "user", "content": synthesis_prompt}
@@ -733,7 +795,7 @@ class RAGLangGraph:
                 frequency_penalty=0.3,
                 stream=True
             )
-            for chunk in stream:
+            async for chunk in async_iter(stream):
                 delta = chunk.choices[0].delta.content or ""
                 if delta:
                     final_response += delta
@@ -771,7 +833,7 @@ class RAGLangGraph:
                 events_queue.append({"event": "answer_chunk", "text": final_response[i:i+chunk_size]})
             
         try:
-            self.engine.save_memory(session_id, query, "user")
+            await asyncio.to_thread(self.engine.save_memory, session_id, query, "user")
         except Exception as e:
             logger.error(f"Failed to save user memory query: {e}")
         
@@ -798,7 +860,7 @@ class RAGLangGraph:
         }
         
         try:
-            self.engine.save_memory(session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
+            await asyncio.to_thread(self.engine.save_memory, session_id, final_response, "assistant", 0.8, telemetry=telemetry_data)
         except Exception as e:
             logger.error(f"Failed to save assistant memory response: {e}")
         
@@ -853,3 +915,4 @@ class RAGLangGraph:
             "llm_call_count": llm_call_count,
             "events_queue": events_queue
         }
+

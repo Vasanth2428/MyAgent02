@@ -3,6 +3,7 @@
 RAG CONTEXT ENGINE - MEMORY MODULE
 ================================================================================
 Short-term conversational memory with temporal decay and semantic deduplication.
+Uses embedding-based cosine similarity for better semantic duplicate detection.
 """
 
 import re
@@ -11,15 +12,40 @@ import logging
 import numpy as np
 import tiktoken
 from datetime import datetime
-from typing import List
+from typing import List, Optional
+from functools import lru_cache
 
 from core.config import (
     TOKENIZER_ENCODING, MEMORY_DECAY_RATE, MEMORY_TOKEN_BUDGET,
-    MEMORY_WEIGHT_THRESHOLD
+    MEMORY_WEIGHT_THRESHOLD, SEMANTIC_DEDUP_THRESHOLD, SEMANTIC_DEDUP_MIN_WORDS
 )
 
 logger = logging.getLogger("RAG.Memory")
 tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
+
+_embedding_model = None
+
+def _get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        from core.config import EMBEDDING_MODEL
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+    return _embedding_model
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Computes cosine similarity between two vectors."""
+    if a is None or b is None:
+        return 0.0
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
+
+def _encode_text(text: str) -> np.ndarray:
+    """Encodes text to embedding, caching for performance."""
+    return _get_embedding_model().encode(text, normalize_embeddings=True)
 
 
 class MemoryEntry:
@@ -31,6 +57,7 @@ class MemoryEntry:
         base_importance: Initial importance score (default: 1.0).
         role: The speaker's role ('user' or 'assistant').
         last_seen: Timestamp of when this entry was last accessed.
+        embedding: Cached embedding for semantic deduplication (lazy-loaded).
     """
 
     def __init__(self, text: str, importance: float = 1.0, role: str = "user"):
@@ -38,6 +65,13 @@ class MemoryEntry:
         self.base_importance = importance
         self.role = role
         self.last_seen = datetime.now()
+        self._embedding: Optional[np.ndarray] = None
+
+    @property
+    def embedding(self) -> np.ndarray:
+        if self._embedding is None:
+            self._embedding = _encode_text(self.text)
+        return self._embedding
 
     def current_weight(self, decay_rate: float = MEMORY_DECAY_RATE) -> float:
         """
@@ -69,20 +103,40 @@ class ConversationMemory:
     def add(self, text: str, importance: float = 1.0, role: str = "user"):
         """
         Adds a turn to memory. If semantically similar text exists, resets its timer.
+        Uses embedding-based cosine similarity for semantic deduplication.
         """
+        word_count = len(text.split())
+
+        # For longer texts, use semantic similarity
+        if word_count >= SEMANTIC_DEDUP_MIN_WORDS:
+            try:
+                new_embedding = _encode_text(text)
+                for existing in self.entries:
+                    existing_embedding = existing.embedding
+                    similarity = _cosine_similarity(existing_embedding, new_embedding)
+                    if similarity > SEMANTIC_DEDUP_THRESHOLD:
+                        logger.debug(f"Semantic deduplicating {role} entry (Similarity: {similarity:.2f}).")
+                        existing.touch()
+                        existing.base_importance = max(existing.base_importance, importance)
+                        return
+            except Exception as e:
+                logger.warning(f"Semantic deduplication failed, falling back to lexical: {e}")
+
+        # Fallback to lexical Jaccard for short texts or errors
         for existing in self.entries:
             overlap = self._text_overlap(existing.text, text)
             if overlap > 0.7:
-                logger.debug(f"Deduplicating {role} entry (Overlap: {overlap:.2f}).")
+                logger.debug(f"Lexical deduplicating {role} entry (Overlap: {overlap:.2f}).")
                 existing.touch()
                 existing.base_importance = max(existing.base_importance, importance)
                 return
+
         logger.debug(f"Adding new {role} entry. Total active: {len(self.entries) + 1}")
         self.entries.append(MemoryEntry(text, importance, role))
 
     @staticmethod
     def _text_overlap(a: str, b: str) -> float:
-        """Calculates Jaccard similarity between two strings."""
+        """Calculates Jaccard similarity between two strings (fallback for short texts)."""
         set_a = set(re.findall(r'\w+', a.lower()))
         set_b = set(re.findall(r'\w+', b.lower()))
         if not set_a or not set_b:
@@ -95,16 +149,13 @@ class ConversationMemory:
         and formats them in chronological order.
         """
         t_start = time.time()
-        # Associate each entry with its original insertion index to preserve chronology
         indexed_entries = list(enumerate(self.entries))
-        
-        # Filter entries with weight > threshold
+
         active = [
             (idx, e) for idx, e in indexed_entries 
             if e.current_weight(self.decay_rate) > MEMORY_WEIGHT_THRESHOLD
         ]
-        
-        # Sort by weight descending to prioritize high-importance and recent entries
+
         active.sort(key=lambda x: x[1].current_weight(self.decay_rate), reverse=True)
 
         selected_indexed = []
@@ -118,7 +169,6 @@ class ConversationMemory:
             else:
                 break
 
-        # Sort the selected entries chronologically by their original index
         selected_indexed.sort(key=lambda x: x[0])
         context_parts = [text for idx, text in selected_indexed]
 

@@ -19,9 +19,11 @@ class TestWeaviateRetriever(unittest.TestCase):
 
     def test_retrieval_returns_results(self):
         query = "operating system"
-        results = self.retriever.retrieve(query, top_k=2)
+        results, embed_latency, search_latency = self.retriever.retrieve(query, top_k=2)
         
         self.assertGreater(len(results), 0, "Should find at least 1 document candidate")
+        self.assertIsInstance(embed_latency, float, "Embedding latency should be float")
+        self.assertIsInstance(search_latency, float, "Search latency should be float")
         for res in results:
             self.assertIn("text", res, "Result missing 'text' property")
             self.assertIn("score", res, "Result missing 'score' property")

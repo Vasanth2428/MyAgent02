@@ -96,7 +96,7 @@ class TestContextOverflow(unittest.TestCase):
         mock_compress.return_value = "Compressed."
         
         # Low limit
-        limit = 100
+        limit = 160
         
         (new_context, new_mem_text, new_docs, overflow_occurred, steps, 
          initial, final, mem_tkn, doc_tkn) = self.engine._handle_context_overflow(

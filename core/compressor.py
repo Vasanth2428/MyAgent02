@@ -9,7 +9,7 @@ selects the top-K within a token budget.
 import re
 import time
 import logging
-from typing import List
+from typing import List, Dict
 import tiktoken
 
 from core.config import TOKENIZER_ENCODING, COMPRESSION_SCORE_THRESHOLD
@@ -126,3 +126,26 @@ class Compressor:
             f"Tokens: {initial_tokens} → {final_tokens}. Time: {t_ms:.1f}ms"
         )
         return compressed
+
+    @staticmethod
+    def evaluate_compression(query: str, documents: List[str], key_facts: List[str]) -> Dict:
+        """
+        Evaluates if compression preserves key facts.
+        Returns metrics including compression ratio and facts preserved ratio.
+        """
+        compressed = Compressor.compress(documents, query, max_tokens=500)
+
+        facts_preserved = sum(1 for fact in key_facts if fact.lower() in compressed.lower())
+        facts_ratio = facts_preserved / len(key_facts) if key_facts else 0.0
+
+        total_raw_chars = sum(len(d) for d in documents)
+        compressed_chars = len(compressed)
+        compression_ratio = 1 - (compressed_chars / total_raw_chars) if total_raw_chars > 0 else 0.0
+
+        return {
+            "query": query,
+            "compression_ratio": compression_ratio,
+            "facts_preserved": facts_ratio,
+            "facts_lost": [f for f in key_facts if f.lower() not in compressed.lower()],
+            "noise_dropped": compression_ratio > 0.1,
+        }

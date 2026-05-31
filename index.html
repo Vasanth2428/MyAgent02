@@ -14,7 +14,7 @@
         <div class="header-brand">
             <div class="logo-glow"></div>
             <span class="sys-title">RAG_CONTEXT_ORCHESTRATOR</span>
-            <span class="sys-version">v2.1.0-sim</span>
+            <span class="sys-version">v2.2.0</span>
         </div>
         <div class="status-strip">
             <span class="status-indicator">
@@ -29,6 +29,7 @@
         </div>
     </header>
 
+    <main>
     <div class="main-grid">
         <!-- LEFT PANEL: PIPELINE LOGS & OVERFLOW MONITOR -->
         <div class="sidebar-left">
@@ -67,11 +68,22 @@
                 <span class="label-text">INTERACTION_THREAD</span>
                 <span class="mode-badge" id="active-mode-badge">CONTEXT_ENGINE</span>
             </div>
-            <div id="chat-window"></div>
+            <div id="chat-window">
+                <div id="chat-skeleton" class="chat-skeleton">
+                    <div class="skeleton-bubble sk-user"></div>
+                    <div class="skeleton-bubble sk-ai"></div>
+                    <div class="skeleton-bubble sk-user"></div>
+                    <div class="skeleton-bubble sk-ai-short"></div>
+                </div>
+            </div>
+            <button type="button" id="scroll-bottom-fab" class="scroll-bottom-fab" title="Scroll to latest">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
             <form id="comm-form" class="input-bar">
                 <div class="input-wrapper">
-                    <input type="text" id="comm-input" placeholder="Enter query to process through context engine..." required autofocus autocomplete="off">
+                    <input type="text" id="comm-input" class="chat-input" placeholder="Enter query to process through context engine..." required autofocus autocomplete="off">
                     <div class="input-glow"></div>
+                    <span class="shortcut-hint">Ctrl+Enter</span>
                 </div>
                 <button type="submit" id="comm-btn" class="glow-btn">
                     <span>EXECUTE</span>
@@ -141,7 +153,7 @@
                     </div>
                     <div class="stat-box">
                         <span id="stat-m" class="stat-val">0</span>
-                        <span class="stat-key">CONVERSATION_TURNS</span>
+                        <span class="stat-key">ACTIVE_MEMORIES</span>
                     </div>
                     <div class="stat-box">
                         <span id="stat-cpu" class="stat-val">0%</span>
@@ -203,12 +215,16 @@
                         <span class="upload-text">INJECT_DOCUMENT_SOURCE</span>
                         <span class="upload-subtext">Drag & drop PDF/TXT files or click to browse</span>
                     </div>
-                    <input type="file" id="file-in" style="display: none;">
+                    <input type="file" id="file-in" accept=".pdf,.txt" style="display: none;">
                     <div id="up-msg" class="upload-feedback"></div>
                 </div>
             </div>
         </div>
     </div>
+    </main>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
 
     <!-- Telemetry Modal -->
     <div id="telemetry-modal" class="modal-backdrop">

@@ -289,7 +289,8 @@ class TestLangGraphAgent(unittest.TestCase):
             "scratchpad": "",
             "iteration": 1,
             "actions_taken": [],
-            "events_queue": []
+            "events_queue": [],
+            "memory_text": "History context"
         }
         res_time = self.graph.execute_tool(state_time)
         self.assertIn("Current Datetime:", res_time["scratchpad"])
@@ -299,7 +300,8 @@ class TestLangGraphAgent(unittest.TestCase):
             "scratchpad": "",
             "iteration": 1,
             "actions_taken": [],
-            "events_queue": []
+            "events_queue": [],
+            "memory_text": "History context"
         }
         res_calc = self.graph.execute_tool(state_calc)
         self.assertIn("30", res_calc["scratchpad"])

@@ -44,6 +44,12 @@ const overflowIndicatorDot     = document.getElementById('overflow-indicator-dot
 const telemetryModal          = document.getElementById('telemetry-modal');
 const telemetryModalBody      = document.getElementById('telemetry-modal-body');
 
+// Toast Container
+const toastContainer          = document.getElementById('toast-container');
+
+// Scroll-to-Bottom FAB
+const scrollBottomFab         = document.getElementById('scroll-bottom-fab');
+
 // ---- Session State Variables ----
 let sid = localStorage.getItem('station_sid') || 'SID-' + Math.random().toString(36).substr(2, 6).toUpperCase();
 localStorage.setItem('station_sid', sid);
@@ -87,9 +93,20 @@ document.querySelectorAll('input[name="engine-mode"]').forEach(radio => {
 });
 
 // ---- Slider & Preset Listeners ----
-contextLimitSlider.addEventListener('input', (e) => {
-    AppState.updateContextLimit(parseInt(e.target.value));
-});
+contextLimitSlider.addEventListener('input', (() => {
+    let debounceTimer = null;
+    return (e) => {
+        const val = parseInt(e.target.value);
+        // Immediate visual feedback
+        contextLimitSliderVal.textContent = val;
+        tokenLimitValReadout.textContent = val;
+        // Debounce the heavier update
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            AppState.updateContextLimit(val);
+        }, 60);
+    };
+})());
 
 document.querySelectorAll('.preset-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -129,6 +146,29 @@ function addLog(msg, type = 'INFO') {
     logWindow.appendChild(entry);
     logWindow.scrollTop = logWindow.scrollHeight;
 }
+
+// ---- Toast Notification System ----
+function showToast(message, type = 'info') {
+    if (!toastContainer) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    toastContainer.appendChild(toast);
+    // Auto-remove after animation completes
+    setTimeout(() => {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 4000);
+}
+
+// ---- Keyboard Shortcut (Ctrl+Enter) ----
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (!AppState.isGenerating && input.value.trim()) {
+            form.dispatchEvent(new Event('submit', { cancelable: true }));
+        }
+    }
+});
 
 // ---- Chat Bubble Renderer ----
 function addMsg(text, type = 'ai', telemetryData = null) {
@@ -264,6 +304,7 @@ MODE: ${(data.stats?.mode || 'N/A').toUpperCase()}
 HYBRID ALPHA: ${data.stats?.alpha || 0.5}
 PEAK RE-RANK SCORE: ${data.stats?.reranker_peak_score || 0}
 COMPRESSION RATIO: ${((data.stats?.compression_ratio || 0) * 100).toFixed(1)}%
+GROUNDING SCORE: ${(data.stats?.grounding_score || 0).toFixed(3)}
 EMBED GENERATION: ${latency.phase_2_embed_generation_ms || 0} ms
 WEAVIATE SEARCH: ${latency.phase_2_weaviate_search_ms || 0} ms
 HYDE GENERATION: ${latency.phase_1_5_hyde_ms || 0} ms
@@ -647,7 +688,9 @@ document.getElementById('file-in').addEventListener('change', async (e) => {
     const feedback = document.getElementById('up-msg');
     feedback.style.display = 'block';
     feedback.textContent = `Uploading: ${file.name}...`;
+    feedback.className = 'upload-feedback uploading';
     addLog(`Initiating file injection: ${file.name}`, 'UPLOAD');
+    showToast(`Uploading ${file.name}...`, 'info');
     
     const fd = new FormData();
     fd.append('file', file);
@@ -657,16 +700,22 @@ document.getElementById('file-in').addEventListener('change', async (e) => {
         if (res.ok) { 
             const data = await res.json();
             feedback.textContent = `Indexed successfully!`;
-            addLog(`Injection completed: ${data.message}`, "SUCCESS"); 
+            feedback.className = 'upload-feedback success';
+            addLog(`Injection completed: ${data.message}`, "SUCCESS");
+            showToast(`✓ ${data.message}`, 'success');
             refreshGlobalStats(); 
         } else {
             const err = await res.json();
             feedback.textContent = `Upload failed.`;
+            feedback.className = 'upload-feedback error';
             addLog(`Injection failed: ${err.detail || 'HTTP Error'}`, "ERROR");
+            showToast(`✗ Upload failed: ${err.detail || 'Error'}`, 'error');
         }
     } catch (e) { 
         feedback.textContent = `Communication error.`;
-        addLog(`Injection communication error: ${e.message}`, "ERROR"); 
+        feedback.className = 'upload-feedback error';
+        addLog(`Injection communication error: ${e.message}`, "ERROR");
+        showToast(`✗ Network error during upload`, 'error');
     }
     
     setTimeout(() => { feedback.style.display = 'none'; }, 4000);
@@ -692,7 +741,10 @@ async function loadHistory() {
     try {
         addLog("Restoring session conversation thread...", "SYSTEM");
         const res = await fetch(`${API_BASE}/history/${sid}`);
-        if (!res.ok) return;
+        if (!res.ok) {
+            removeSkeleton();
+            return;
+        }
         
         const history = await res.json();
         chatWindow.innerHTML = '';
@@ -714,11 +766,19 @@ async function loadHistory() {
                 }
             }
             addLog(`Restored ${history.length} turns (${turnsRestored} stats-footer records).`, "SUCCESS");
+        } else {
+            removeSkeleton();
         }
     } catch (e) {
         console.error(e);
         addLog("Failed to restore session history from persistent database.", "WARNING");
+        removeSkeleton();
     }
+}
+
+function removeSkeleton() {
+    const skeleton = document.getElementById('chat-skeleton');
+    if (skeleton) skeleton.remove();
 }
 
 // Initializers
@@ -771,6 +831,59 @@ if (hudToggleBtn && mainGrid) {
             const isVisible = mainGrid.classList.contains('hud-visible');
             hudToggleBtn.innerHTML = isVisible ? `<span>HIDE HUD</span>` : `<span>SHOW HUD</span>`;
             hudToggleBtn.classList.toggle('hud-hidden-state', !isVisible);
+        }
+    });
+}
+
+// ---- Scroll-to-Bottom FAB ----
+if (scrollBottomFab && chatWindow) {
+    chatWindow.addEventListener('scroll', () => {
+        const scrollFromBottom = chatWindow.scrollHeight - chatWindow.scrollTop - chatWindow.clientHeight;
+        scrollBottomFab.classList.toggle('visible', scrollFromBottom > 150);
+    });
+
+    scrollBottomFab.addEventListener('click', () => {
+        chatWindow.scrollTo({ top: chatWindow.scrollHeight, behavior: 'smooth' });
+    });
+}
+
+// ---- Drag & Drop File Upload ----
+const dropArea = document.getElementById('drop-area');
+const fileInput = document.getElementById('file-in');
+
+if (dropArea) {
+    ['dragenter', 'dragover'].forEach(evt => {
+        dropArea.addEventListener(evt, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropArea.classList.add('drag-over');
+        });
+    });
+
+    ['dragleave', 'drop'].forEach(evt => {
+        dropArea.addEventListener(evt, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropArea.classList.remove('drag-over');
+        });
+    });
+
+    dropArea.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            const file = files[0];
+            const validTypes = ['.pdf', '.txt'];
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!validTypes.includes(ext)) {
+                showToast(`Unsupported file type: ${ext}. Use .pdf or .txt`, 'error');
+                addLog(`Rejected drag-drop: unsupported file type ${ext}`, 'WARNING');
+                return;
+            }
+            // Trigger the same upload flow as the file input
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            fileInput.dispatchEvent(new Event('change'));
         }
     });
 }

@@ -1,10 +1,3 @@
-"""
-================================================================================
-RAG CONTEXT ENGINE - QUERY EXPANDER MODULE
-================================================================================
-LLM-driven multi-query generation to improve retrieval recall.
-"""
-
 import json
 import time
 import logging
@@ -20,8 +13,11 @@ class QueryExpander:
     Uses the LLM to generate diverse search variations of the user's query.
     """
 
-    def __init__(self, groq_client):
+    def __init__(self, groq_client, async_client=None):
         self.client = groq_client
+        self.async_client = async_client
+        if not self.async_client and hasattr(groq_client, "llm_service"):
+            self.async_client = groq_client.llm_service.async_client
 
     def expand(self, query: str) -> List[str]:
         """
@@ -48,4 +44,32 @@ class QueryExpander:
         except Exception as e:
             t_ms = (time.time() - t_start) * 1000
             logger.error(f"Expansion failed in {t_ms:.1f}ms: {e}")
+            return [query]
+
+    async def expand_async(self, query: str) -> List[str]:
+        """
+        Generates 3 diverse search variations of the input query asynchronously.
+        Returns [original_query, variation_1, variation_2, variation_3].
+        """
+        t_start = time.time()
+        prompt = (
+            "Generate 3 diverse search variations of the following query, "
+            "focused on different keywords. Return ONLY a JSON list of strings "
+            "under the key 'variations'.\n"
+            f"Query: {query}"
+        )
+        client = self.async_client or self.client
+        try:
+            completion = await client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            variations = json.loads(completion.choices[0].message.content).get("variations", [])
+            t_ms = (time.time() - t_start) * 1000
+            logger.info(f"Generated {len(variations)} variations async in {t_ms:.1f}ms")
+            return [query] + variations
+        except Exception as e:
+            t_ms = (time.time() - t_start) * 1000
+            logger.error(f"Async expansion failed in {t_ms:.1f}ms: {e}")
             return [query]

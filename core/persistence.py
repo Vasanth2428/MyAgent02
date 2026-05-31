@@ -29,24 +29,27 @@ class PersistentMemoryStore:
         """
         Executes a database operations block with auto-retries on locking.
         """
-        max_retries = 5
-        base_delay = 0.05
-        for attempt in range(max_retries):
-            try:
-                with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-                    conn.execute("PRAGMA journal_mode=WAL;")
-                    return func(conn, *args, **kwargs)
-            except sqlite3.OperationalError as e:
+        def is_db_transient(e):
+            if isinstance(e, sqlite3.OperationalError):
                 err_msg = str(e).lower()
-                if "locked" in err_msg or "busy" in err_msg:
-                    if attempt == max_retries - 1:
-                        logger.error(f"SQLite operation failed after {max_retries} attempts: {e}")
-                        raise
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.02)
-                    logger.warning(f"Database locked or busy ({e}). Retrying in {delay:.3f}s...")
-                    time.sleep(delay)
-                else:
-                    raise
+                return "locked" in err_msg or "busy" in err_msg
+            return False
+
+        from core.retry import retry
+
+        @retry(
+            retries=5,
+            backoff=0.05,
+            jitter=0.02,
+            is_transient_fn=is_db_transient,
+            logger_name="RAG.Persistence"
+        )
+        def _execute():
+            with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                return func(conn, *args, **kwargs)
+
+        return _execute()
 
     def _init_db(self):
         """Creates the memory table and indexes if they don't exist."""
