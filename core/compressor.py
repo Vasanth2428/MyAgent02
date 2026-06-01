@@ -1,9 +1,10 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - COMPRESSOR MODULE
-================================================================================
-Extractive context compression: scores sentences by query relevance and
-selects the top-K within a token budget.
+RAG Compressor - Making Context Fit
+
+When we find documents for your question, they might be too long to fit in our AI's
+"thinking space" (called a context window). This module shortens the content
+intelligently by keeping the most relevant sentences and removing less important
+ones, so the AI can still give you a good answer without running out of room.
 """
 
 import re
@@ -24,8 +25,11 @@ _SENTENCE_END = re.compile(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s')
 
 class Compressor:
     """
-    Implements extractive context compression to fit relevant facts
-    into the LLM's token budget.
+    Shortens document content to fit within the AI's token limits.
+    
+    Think of this like summarizing a long article to its key points. This class
+    looks at each paragraph or code block and keeps the ones that are most
+    relevant to your question, removing the rest while preserving meaning.
     """
 
     @staticmethod

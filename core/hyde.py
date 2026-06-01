@@ -8,8 +8,12 @@ logger = logging.getLogger("RAG.HyDE")
 
 class HyDEGenerator:
     """
-    Hypothetical Document Embeddings (HyDE) generator.
-    Generates a draft response used to align dense retrieval vectors.
+    Creates a hypothetical answer to help find better documents.
+    
+    Often called "Hypothetical Document Embeddings" (HyDE). When we're not sure
+    what documents to find, this class writes a sample answer first, then uses
+    that to search for real documents that match. It's like brainstorming what
+    a good answer might look like before we go find it.
     """
 
     def __init__(self, groq_client, async_client=None):
@@ -20,14 +24,17 @@ class HyDEGenerator:
 
     def generate_hypothetical_doc(self, query: str) -> str:
         """
-        Creates a brief, hypothetical response answering the query.
+        Create a sample answer to improve document search.
+        
+        Instead of searching for your exact question, we first create what a good
+        answer might look like, then search for documents matching that answer.
+        This often finds more relevant documents than searching the original query.
         """
         t_start = time.time()
         prompt = (
-            "Write a brief, hypothetical paragraph answering the query below. "
-            "Focus on outlining the key concepts and terminology. "
-            "Do not write conversational preamble. Go straight to the point.\n"
-            f"Query: {query}"
+            "Write a brief paragraph answering this question. "
+            "Focus on the key concepts and terms. No extra commentary.\n"
+            f"Question: {query}"
         )
         try:
             completion = self.client.chat.completions.create(
@@ -38,7 +45,7 @@ class HyDEGenerator:
             )
             hypothetical_doc = completion.choices[0].message.content.strip()
             t_ms = (time.time() - t_start) * 1000
-            logger.info(f"Generated hypothetical document in {t_ms:.1f}ms")
+            logger.info(f"Created hypothetical answer in {t_ms:.1f}ms")
             return hypothetical_doc
         except Exception as e:
             t_ms = (time.time() - t_start) * 1000
@@ -47,14 +54,15 @@ class HyDEGenerator:
 
     async def generate_hypothetical_doc_async(self, query: str) -> str:
         """
-        Creates a brief, hypothetical response answering the query asynchronously.
+        Create a sample answer asynchronously.
+        
+        Same as generate_hypothetical_doc() but runs in the background.
         """
         t_start = time.time()
         prompt = (
-            "Write a brief, hypothetical paragraph answering the query below. "
-            "Focus on outlining the key concepts and terminology. "
-            "Do not write conversational preamble. Go straight to the point.\n"
-            f"Query: {query}"
+            "Write a brief paragraph answering this question. "
+            "Focus on the key concepts and terms. No extra commentary.\n"
+            f"Question: {query}"
         )
         client = self.async_client or self.client
         try:
@@ -66,7 +74,7 @@ class HyDEGenerator:
             )
             hypothetical_doc = completion.choices[0].message.content.strip()
             t_ms = (time.time() - t_start) * 1000
-            logger.info(f"Generated hypothetical document async in {t_ms:.1f}ms")
+            logger.info(f"Created hypothetical answer async in {t_ms:.1f}ms")
             return hypothetical_doc
         except Exception as e:
             t_ms = (time.time() - t_start) * 1000

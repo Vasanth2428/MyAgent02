@@ -1,9 +1,14 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - MEMORY MODULE
-================================================================================
-Short-term conversational memory with temporal decay and semantic deduplication.
-Uses embedding-based cosine similarity for better semantic duplicate detection.
+RAG Memory - Conversation History That Forgets Gracefully
+
+This module handles remembering what's been said during your conversation. It works
+like a smart notepad that:
+- Keeps track of important facts from your chat
+- Forgets old information automatically (like a fading memory)
+- Recognizes when you're repeating something similar and just refreshes that memory
+
+The memory helps the AI give more contextual answers that consider what you've
+already discussed.
 """
 
 import re
@@ -20,18 +25,13 @@ from core.config import (
     MEMORY_WEIGHT_THRESHOLD, SEMANTIC_DEDUP_THRESHOLD, SEMANTIC_DEDUP_MIN_WORDS
 )
 
+# Re-export for backward compatibility with tests
+def _get_embedding_model():
+    from core.services.grounding_service import _get_shared_embedding_model
+    return _get_shared_embedding_model()
+
 logger = logging.getLogger("RAG.Memory")
 tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
-
-_embedding_model = None
-
-def _get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        from sentence_transformers import SentenceTransformer
-        from core.config import EMBEDDING_MODEL
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-    return _embedding_model
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """Computes cosine similarity between two vectors."""
@@ -44,20 +44,21 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 def _encode_text(text: str) -> np.ndarray:
-    """Encodes text to embedding, caching for performance."""
-    return _get_embedding_model().encode(text, normalize_embeddings=True)
+    """Encodes text to embedding using shared model."""
+    from core.services.grounding_service import _get_shared_embedding_model
+    return _get_shared_embedding_model().encode(text, normalize_embeddings=True)
 
 
 class MemoryEntry:
     """
-    Represents a single turn in a conversation.
-
-    Attributes:
-        text: The content of the conversation turn.
-        base_importance: Initial importance score (default: 1.0).
-        role: The speaker's role ('user' or 'assistant').
-        last_seen: Timestamp of when this entry was last accessed.
-        embedding: Cached embedding for semantic deduplication (lazy-loaded).
+    Represents one message in the conversation.
+    
+    Each time you or the AI says something, we store it here. The entry tracks:
+    - What was said (text)
+    - Who said it (role: 'user' or 'assistant')
+    - How important it is (importance - helps decide what to keep)
+    - When it was last mentioned (last_seen - used for forgetting old info)
+    - A mathematical fingerprint for finding similar messages (embedding)
     """
 
     def __init__(self, text: str, importance: float = 1.0, role: str = "user"):
@@ -75,8 +76,11 @@ class MemoryEntry:
 
     def current_weight(self, decay_rate: float = MEMORY_DECAY_RATE) -> float:
         """
-        Calculates the current relevance based on time elapsed.
-        Formula: W = I * e^(-R * H) where H is hours since last seen.
+        How relevant this memory is right now.
+        
+        Memories fade over time. This calculates how important this entry still is
+        based on how long ago it was mentioned. The formula uses exponential decay:
+        if something was important but mentioned hours ago, it becomes less important.
         """
         hours = (datetime.now() - self.last_seen).total_seconds() / 3600
         return self.base_importance * np.exp(-decay_rate * hours)
@@ -88,11 +92,15 @@ class MemoryEntry:
 
 class ConversationMemory:
     """
-    Manages short-term context using temporal decay and semantic deduplication.
-
+    Manages conversation history with smart forgetting.
+    
+    This class holds all the messages in your current conversation. It automatically
+    removes old messages that have become "faded" (less important), keeping your
+    context focused on recent and relevant discussion while staying within token limits.
+    
     Args:
-        decay_rate: Speed at which memories fade (default from config).
-        max_tokens: Maximum token budget for memory context.
+        decay_rate: How quickly memories fade (higher = forget faster)
+        max_tokens: Maximum space allocated for memory in the AI's context
     """
 
     def __init__(self, decay_rate: float = MEMORY_DECAY_RATE, max_tokens: int = MEMORY_TOKEN_BUDGET):

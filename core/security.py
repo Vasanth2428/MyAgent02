@@ -1,17 +1,34 @@
+"""
+Security - Protecting Against Malicious Document Content
+
+Documents uploaded by users might contain hidden instructions trying to trick the AI.
+This module sanitizes all document content before it's sent to the language model:
+- Escapes XML/HTML tags to prevent formatting attacks
+- Removes common "jailbreak" prompt injection patterns
+- Blocks attempts to override system instructions
+
+Think of it as a security guard that makes sure documents can't tell the AI
+to do anything dangerous or unexpected.
+"""
+
 import re
+
 
 def sanitize_document_text(text: str) -> str:
     """
-    Sanitizes raw document text to prevent XML breakout and prompt injection instructions.
+    Clean document text to remove potential security threats.
     
-    1. Prevents XML breakout by escaping tag markers (< and >).
-    2. Identifies and strips common prompt injection override phrases.
-    3. Detects role override attempts and system prompt manipulation.
+    Documents from users are untrusted. They might contain:
+    - Instructions to ignore safety rules (jailbreak attempts)
+    - Fake system prompts to confuse the AI
+    - Commands trying to execute harmful actions
+    
+    This function removes those threats while keeping the actual content safe.
     """
     if not text:
         return ""
         
-    # 1. Escape HTML/XML tag markers to isolate the context from XML wrapping
+    # Escape HTML/XML tags to prevent format-based attacks
     escaped = text.replace("<", "&lt;").replace(">", "&gt;")
     
     # 2. Match and sanitize common prompt override structures

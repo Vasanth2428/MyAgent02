@@ -1,9 +1,15 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - SPLITTER MODULE
-================================================================================
-Recursive character-based text splitting to partition raw uploaded files
-into semantically cohesive document chunks.
+Document Splitter - Breaking Up Large Files
+
+When you upload a document (PDF or text file), it gets broken into smaller chunks.
+This makes searching more precise - instead of finding a whole 50-page document,
+we can find the specific paragraph that answers your question.
+
+The splitter tries to keep content together logically:
+- Paragraph breaks
+- Code blocks stay intact
+- Lists stay together
+- Overlap between chunks helps maintain context
 """
 
 import logging

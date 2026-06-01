@@ -1,24 +1,45 @@
 """
-==============================================================================
-RAG BENCHMARKS
-==============================================================================
-Predefined benchmark queries with expected answers for systematic evaluation.
-Each benchmark tests specific aspects of the RAG pipeline.
+Benchmark Queries - Test Cases for Evaluating RAG Performance
+
+These are prepared questions with expected answers that let us test if the
+system is working correctly. Each category tests a different feature:
+
+- retrieval: Can we find basic facts?
+- reranking: Does re-scoring put the right documents first?
+- hyde: Does hypothetical search help find complex information?
+- compression: Do we preserve key facts when shortening?
+- grounding: Does the answer actually come from the documents?
+- conflicting: Can we pick the right answer when docs disagree?
+- irrelevant: Do we ignore documents that aren't relevant?
+
+Run these tests after changes to make sure nothing got worse.
 """
 
 from typing import List, Dict
 from dataclasses import dataclass
 
+
 @dataclass
 class BenchmarkQuery:
-    """A single benchmark test case."""
+    """
+    One test case for evaluating the RAG system.
+    
+    Attributes:
+        query: The question to ask the system
+        expected_answer: What a good answer looks like
+        key_context_facts: Important facts that should be in the answer
+        category: Which feature this tests
+        expected_sources: Which documents should contain the answer
+        conflicting_document: A document that might confuse retrieval
+        irrelevant_document: A document that should be ignored
+    """
     query: str
     expected_answer: str
     key_context_facts: List[str]
     category: str  # retrieval, hyde, compression, grounding, conflicting, irrelevant
     expected_sources: List[str] = None
-    conflicting_document: str = None  # Document that might confuse retrieval
-    irrelevant_document: str = None    # Document that should NOT be retrieved
+    conflicting_document: str = None
+    irrelevant_document: str = None
 
 # Benchmark dataset for RAG evaluation - includes edge cases for robust testing
 RAG_BENCHMARKS = [
@@ -90,30 +111,29 @@ RAG_BENCHMARKS = [
 ]
 
 def get_benchmarks_by_category(category: str) -> List[BenchmarkQuery]:
-    """Get all benchmarks for a specific category."""
+    """Get all benchmarks for a specific category of test."""
     return [b for b in RAG_BENCHMARKS if b.category == category]
 
+
 def get_all_benchmarks() -> List[BenchmarkQuery]:
-    """Get all benchmark queries."""
-    return RAG_BENCHMARKS
+    """Get the full list of all benchmark queries."""
+    return RAG_BENCHMARKS.copy()
+
 
 def load_benchmark_dataset(path: str = None) -> List[BenchmarkQuery]:
-    """Load benchmarks from external file if needed."""
+    """
+    Load benchmarks from a JSON file if you want custom tests.
+    
+    If no path is given, returns the default built-in benchmarks.
+    """
     if path:
         import json
         with open(path, 'r') as f:
             data = json.load(f)
         return [BenchmarkQuery(**item) for item in data]
-    return RAG_BENCHMARKS
+    return RAG_BENCHMARKS.copy()
+
 
 def get_benchmarks_by_source(source_name: str) -> List[BenchmarkQuery]:
-    """Get benchmarks that should be sourced from a specific document."""
+    """Get benchmarks that should find answers in a specific document."""
     return [b for b in RAG_BENCHMARKS if b.expected_sources and source_name in b.expected_sources]
-
-
-def load_benchmark_dataset(path: str = None) -> List[BenchmarkQuery]:
-    """Load benchmarks from external file if needed."""
-    if path:
-        # TODO: Load from JSON/YAML
-        pass
-    return RAG_BENCHMARKS

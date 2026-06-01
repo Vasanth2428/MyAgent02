@@ -1,10 +1,19 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - CONFIGURATION
-================================================================================
-Centralized constants and tuning parameters for the entire pipeline.
-Change values here instead of hunting through multiple files.
+RAG Configuration - All the Settings in One Place
+
+This file contains all the knobs you can tweak to change how the system works.
+Values can be overridden with environment variables for easy testing and tuning
+without touching code.
+
+Key settings:
+- LLM: Which AI model to use and how creative it should be
+- Embedding: Which model converts text to mathematical vectors
+- Retrieval: How many results to return and search behavior
+- Memory: How long to remember conversation history
+- Compression: How aggressively to shorten document content
 """
+
+import os
 
 # --- LLM ---
 LLM_MODEL = "llama-3.1-8b-instant"
@@ -24,37 +33,37 @@ MAX_CANDIDATES = 12
 DEFAULT_TOP_K = 5
 
 # --- Token Budgets ---
-TOTAL_CONTEXT_BUDGET = 1500       # Total tokens for memory + knowledge
-MEMORY_TOKEN_BUDGET = 300         # Max tokens for conversation memory
-MIN_KNOWLEDGE_BUDGET = 300        # Floor for knowledge even if memory is large
+TOTAL_CONTEXT_BUDGET = int(os.getenv("RAG_TOTAL_CONTEXT_BUDGET", "1500"))
+MEMORY_TOKEN_BUDGET = int(os.getenv("RAG_MEMORY_TOKEN_BUDGET", "300"))
+MIN_KNOWLEDGE_BUDGET = int(os.getenv("RAG_MIN_KNOWLEDGE_BUDGET", "300"))
 TOKENIZER_ENCODING = "cl100k_base"
 
 # --- Compression ---
-COMPRESSION_SCORE_THRESHOLD = 0.02
-SAFETY_CHAR_LIMIT = 16000        # Hard character limit for Simple RAG mode
+COMPRESSION_SCORE_THRESHOLD = float(os.getenv("RAG_COMPRESSION_SCORE_THRESHOLD", "0.02"))
+SAFETY_CHAR_LIMIT = int(os.getenv("RAG_SAFETY_CHAR_LIMIT", "16000"))
 
 # --- Chunking ---
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
+CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
 
 # --- Memory ---
-MEMORY_DECAY_RATE = 0.1
-MEMORY_WEIGHT_THRESHOLD = 0.1
+MEMORY_DECAY_RATE = float(os.getenv("RAG_MEMORY_DECAY_RATE", "0.1"))
+MEMORY_WEIGHT_THRESHOLD = float(os.getenv("RAG_MEMORY_WEIGHT_THRESHOLD", "0.1"))
 
 # --- Semantic Deduplication ---
-SEMANTIC_DEDUP_THRESHOLD = 0.85  # Cosine similarity threshold for embedding-based dedup
-SEMANTIC_DEDUP_MIN_WORDS = 4     # Minimum words before semantic dedup is used
+SEMANTIC_DEDUP_THRESHOLD = float(os.getenv("RAG_SEMANTIC_DEDUP_THRESHOLD", "0.85"))
+SEMANTIC_DEDUP_MIN_WORDS = int(os.getenv("RAG_SEMANTIC_DEDUP_MIN_WORDS", "4"))
 
 # --- Database ---
-DB_PATH = "memory.db"
-HISTORY_LIMIT = 10
+DB_PATH = os.getenv("RAG_DB_PATH", "memory.db")
+HISTORY_LIMIT = int(os.getenv("RAG_HISTORY_LIMIT", "10"))
 
 # --- HyDE ---
-HYDE_MAX_TOKENS = 150
-HYDE_TEMPERATURE = 0.3
+HYDE_MAX_TOKENS = int(os.getenv("RAG_HYDE_MAX_TOKENS", "150"))
+HYDE_TEMPERATURE = float(os.getenv("RAG_HYDE_TEMPERATURE", "0.3"))
 
 # --- Query Expansion ---
-EXPANSION_MIN_WORDS = 5           # Queries shorter than this skip expansion
+EXPANSION_MIN_WORDS = int(os.getenv("RAG_EXPANSION_MIN_WORDS", "5"))
 
 # --- Cost (Groq Llama 3.1 8B Pricing) ---
 COST_PER_INPUT_TOKEN = 0.05 / 1_000_000
@@ -63,22 +72,33 @@ COST_PER_OUTPUT_TOKEN = 0.08 / 1_000_000
 # --- Pipeline Feature Flags ---
 # These control conditional execution of expensive pipeline stages
 # Features are triggered based on retrieval confidence or mode settings
-ENABLE_HYDE = True              # Hypothetical Document Embeddings
-ENABLE_QUERY_EXPANSION = True   # Semantic query expansion
-ENABLE_RERANKING = True         # Cross-encoder reranking
-ENABLE_COMPRESSION = True       # Context compression
+ENABLE_HYDE = os.getenv("RAG_ENABLE_HYDE", "true").lower() == 'true'
+ENABLE_QUERY_EXPANSION = os.getenv("RAG_ENABLE_QUERY_EXPANSION", "true").lower() == 'true'
+ENABLE_RERANKING = os.getenv("RAG_ENABLE_RERANKING", "true").lower() == 'true'
+ENABLE_COMPRESSION = os.getenv("RAG_ENABLE_COMPRESSION", "true").lower() == 'true'
 
 # Confidence thresholds for conditional feature execution
 # If top result score is above threshold, skip expensive features
-LOW_CONFIDENCE_THRESHOLD = 0.3    # Below this, use full pipeline
-MEDIUM_CONFIDENCE_THRESHOLD = 0.5 # Between low and high, use partial pipeline
+LOW_CONFIDENCE_THRESHOLD = float(os.getenv("RAG_LOW_CONF_THRESH", "0.3"))
+MEDIUM_CONFIDENCE_THRESHOLD = float(os.getenv("RAG_MED_CONF_THRESH", "0.5"))
 
 from dataclasses import dataclass, field
 from typing import Optional
 
 @dataclass
 class PipelineConfig:
-    """Configuration for conditional pipeline feature execution."""
+    """
+    Controls when to use expensive AI features.
+    
+    These settings let us skip costly operations (like re-ranking) when we're
+    already confident in our search results. This makes simple queries faster.
+    
+    Attributes control whether to enable:
+    - HyDE: Generate hypothetical answers for better search
+    - Query expansion: Create multiple search variations
+    - Reranking: Re-score results for better accuracy
+    - Compression: Shorten documents to fit in context
+    """
     enable_hyde: bool = True
     enable_expansion: bool = True
     enable_reranking: bool = True
@@ -107,9 +127,9 @@ class PipelineConfig:
         return cls()
 
     def should_use_full_pipeline(self, top_score: float) -> bool:
-        """Determine if full pipeline is needed based on retrieval confidence."""
+        """Use all features when initial search isn't confident (low score)."""
         return top_score < self.low_confidence_threshold
 
     def should_use_partial_pipeline(self, top_score: float) -> bool:
-        """Determine if partial pipeline features are needed."""
+        """Use some features when search has moderate confidence."""
         return self.low_confidence_threshold <= top_score < self.medium_confidence_threshold

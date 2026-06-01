@@ -1,13 +1,16 @@
 """
-===============================================================================
-RAG CONTEXT ENGINE - GROUNDING VERIFICATION SERVICE
-===============================================================================
-Verifies LLM answers are grounded in retrieved context.
-Detects hallucinations, enforces citation requirements.
+Grounding Verification - Making Sure Answers Are Based on Real Facts
+
+This service checks that the AI's answers actually match the documents we found.
+It prevents "hallucinations" (making up facts) by comparing each sentence
+of the answer against the source documents using semantic similarity.
+
+If the answer isn't well-grounded, we can flag or fix it.
 """
 
 import logging
 import re
+import threading
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 
@@ -15,21 +18,39 @@ from core.config import EMBEDDING_MODEL
 
 logger = logging.getLogger("RAG.Services.Grounding")
 
+_embedding_model_instance: Optional["SentenceTransformer"] = None
+_embedding_model_lock = threading.Lock()
+
+
+def _get_shared_embedding_model():
+    """Get or load the shared embedding model (loaded once, reused everywhere)."""
+    global _embedding_model_instance
+    if _embedding_model_instance is None:
+        with _embedding_model_lock:
+            if _embedding_model_instance is None:
+                from sentence_transformers import SentenceTransformer
+                logger.info(f"Loading embedding model for grounding checks: {EMBEDDING_MODEL}")
+                _embedding_model_instance = SentenceTransformer(EMBEDDING_MODEL)
+    return _embedding_model_instance
+
 
 class GroundingVerifier:
-    """Verifies answer grounding and detects hallucinations."""
+    """
+    Checks that AI answers are actually based on the provided documents.
+    
+    This prevents the AI from making up facts by comparing each sentence
+    against the source content. It uses semantic similarity to find matches
+    even when the wording is different.
+    """
 
     def __init__(self):
         self._embedding_model = None
 
     def _get_embedding_model(self):
-        if self._embedding_model is None:
-            from sentence_transformers import SentenceTransformer
-            self._embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        return self._embedding_model
+        return _get_shared_embedding_model()
 
     def extract_citation_markers(self, answer: str) -> List[Dict]:
-        """Extracts citation markers from answer text."""
+        """Find citations like [source: filename] in the answer text."""
         patterns = [
             r'\[source:\s*([^\]]+)\]',
             r'<document\s+source="([^"]+)"',
@@ -43,8 +64,13 @@ class GroundingVerifier:
 
     def verify_sentence_support(self, sentence: str, context_chunks: List[str], threshold: float = 0.5) -> Tuple[bool, float]:
         """
-        Check if a sentence is supported by any of the context chunks using semantic similarity.
-        Returns (is_supported, max_similarity_score).
+        Check if a sentence is backed by any of the source documents.
+        
+        Uses semantic similarity to find if the sentence matches any document,
+        even when the wording is different. Falls back to word overlap if
+        the embedding model fails.
+        
+        Returns: (is_supported, best_matching_score)
         """
         if not sentence.strip():
             return True, 1.0
@@ -65,7 +91,7 @@ class GroundingVerifier:
             
             return best_score >= threshold, best_score
         except Exception:
-            # Fallback to lexical overlap against all chunks
+            # Fallback: check for common words
             sentence_lower = sentence.lower()
             overlap = len(set(sentence_lower.split()) & set(" ".join(context_chunks).lower().split()))
             ratio = overlap / max(len(sentence_lower.split()), 1)
@@ -73,8 +99,12 @@ class GroundingVerifier:
 
     def detect_hallucinations(self, answer: str, context_chunks: List[str]) -> List[Dict]:
         """
-        Detect potentially hallucinated claims in the answer.
-        Returns list of suspicious claims with evidence scores.
+        Find sentences in the answer that don't match the source documents.
+        
+        Flags suspicious claims that might be made up, including:
+        - Absolute claims (always, never, everyone)
+        - Superlatives (best, worst, only)
+        - Specific dates/years
         """
         sentences = re.split(r'[.!?]+\s*', answer)
         hallucinations = []
@@ -104,32 +134,46 @@ class GroundingVerifier:
         return hallucinations
 
     def compute_grounding_score(self, answer: str, context_chunks: List[str]) -> float:
+        """Calculate how well the answer is grounded in source documents (0.0 to 1.0)."""
+        score, _ = self.verify_grounding(answer, context_chunks)
+        return score
+
+    def verify_grounding(self, answer: str, context_chunks: List[str], threshold: float = 0.3) -> Tuple[float, List[str]]:
         """
-        Compute overall grounding score (0.0 to 1.0).
-        Higher means more grounded.
+        Check that each sentence in the answer matches the source documents.
+        
+        Returns: (grounding_score, list_of_unsupported_claims)
         """
         sentences = [s.strip() for s in re.split(r'[.!?]+\s*', answer) if len(s.strip()) > 10]
 
         if not sentences:
-            return 1.0
+            return 1.0, []
 
         supported_count = 0
         total_score = 0.0
+        unsupported_claims = []
 
         for sent in sentences:
-            is_supported, score = self.verify_sentence_support(sent, context_chunks, threshold=0.3)
+            is_supported, score = self.verify_sentence_support(sent, context_chunks, threshold=threshold)
             if is_supported:
                 supported_count += 1
-            total_score += score
+                total_score += score
+            else:
+                total_score += score
+                unsupported_claims.append(sent[:150])
 
+        # Calculate overall score: mix of support ratio and average similarity
         sentence_score = supported_count / len(sentences)
         avg_similarity = total_score / len(sentences)
+        grounding_score = round((sentence_score * 0.6 + avg_similarity * 0.4), 3)
 
-        return round((sentence_score * 0.6 + avg_similarity * 0.4), 3)
+        return grounding_score, unsupported_claims
 
 
 class GroundingEnforcer:
-    """Enforces citation requirements on LLM answers."""
+    """
+    Adds citations to answers and warns about poorly-grounded responses.
+    """
 
     def __init__(self, llm_client):
         self.verifier = GroundingVerifier()
@@ -137,13 +181,51 @@ class GroundingEnforcer:
 
     def enforce_citations(self, answer: str, context: str) -> str:
         """
-        Post-process answer to add missing citations.
-        If answer lacks citations, attempt to add them based on context.
+        Add [source: filename] citations to sentences that match document content.
+        
+        If the answer doesn't have citations, this adds them based on which
+        documents each sentence seems to come from.
         """
         citations = self.verifier.extract_citation_markers(answer)
 
         if citations:
             return answer
+
+        # Extract source information from context
+        source_pattern = re.compile(r'<document\s+source="([^"]+)">([^<]+)</document>', re.DOTALL)
+        sources = source_pattern.findall(context)
+
+        if not sources:
+            return answer
+
+        # Add inline citations for sentences
+        sentences = re.split(r'([.!?]+)', answer)
+        result = []
+
+        for i in range(0, len(sentences) - 1, 2):
+            sent = sentences[i]
+            punct = sentences[i + 1] if i + 1 < len(sentences) else ""
+
+            for src, content in sources:
+                # Check if sentence shares meaningful words with this source
+                matched_words = [word for word in sent.lower().split() if len(word) > 4 and word in content.lower()]
+                if matched_words:
+                    sent = f'{sent} [source: {src}]'
+                    break
+
+            result.append(sent + punct)
+
+        return "".join(result)
+
+    def add_groundedness_warning(self, answer: str, context: str) -> str:
+        """Prepend a warning if the answer doesn't seem well-grounded in documents."""
+        grounding_score = self.verifier.compute_grounding_score(answer, context)
+
+        if grounding_score < 0.5:
+            warning = f"[WARNING: Low grounding score ({grounding_score:.2f}). Answer may contain unverified claims.]\n\n"
+            return warning + answer
+
+        return answer
 
         # Extract source information from context
         source_pattern = re.compile(r'<document\s+source="([^"]+)">([^<]+)</document>', re.DOTALL)

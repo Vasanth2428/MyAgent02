@@ -1,10 +1,14 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - PROCESSOR (LEGACY COMPATIBILITY)
-================================================================================
-This module re-exports the classes that were extracted into dedicated modules.
-Import directly from core.compressor, core.reranker, core.expander, core.hyde
-for new code.
+Processor - Legacy Compatibility Layer
+
+This file exists to help older code that imports from the old location.
+All the processing logic has been moved to dedicated modules:
+- core.compressor: Handles shortening documents
+- core.reranker: Handles re-scoring search results  
+- core.expander: Handles creating query variations
+- core.hyde: Handles generating hypothetical answers
+
+For new code, import directly from those modules instead.
 """
 
 # Backward-compatible re-exports

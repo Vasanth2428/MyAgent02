@@ -10,7 +10,11 @@ logger = logging.getLogger("RAG.Expander")
 
 class QueryExpander:
     """
-    Uses the LLM to generate diverse search variations of the user's query.
+    Creates different ways to search for the same question.
+    
+    Sometimes a question can be phrased multiple ways. This class asks the AI to
+    generate alternative versions of your query, which helps find more documents
+    that might be relevant but use different wording.
     """
 
     def __init__(self, groq_client, async_client=None):
@@ -21,15 +25,21 @@ class QueryExpander:
 
     def expand(self, query: str) -> List[str]:
         """
-        Generates 3 diverse search variations of the input query.
-        Returns [original_query, variation_1, variation_2, variation_3].
+        Generate alternative ways to search for the same question.
+        
+        For longer questions, this creates 3 variations focused on different keywords.
+        For example, "How does the sales forecasting model work?" might become:
+        - "sales model algorithm"
+        - "forecasting predictions database"
+        - "sales analysis workflow"
+        
+        This helps find more relevant documents that might use different terminology.
         """
         t_start = time.time()
         prompt = (
-            "Generate 3 diverse search variations of the following query, "
-            "focused on different keywords. Return ONLY a JSON list of strings "
-            "under the key 'variations'.\n"
-            f"Query: {query}"
+            "Generate 3 different ways to search for information about this question. "
+            "Focus on different keywords each time. Return only JSON.\n"
+            f"Question: {query}"
         )
         try:
             completion = self.client.chat.completions.create(
@@ -39,24 +49,24 @@ class QueryExpander:
             )
             variations = json.loads(completion.choices[0].message.content).get("variations", [])
             t_ms = (time.time() - t_start) * 1000
-            logger.info(f"Generated {len(variations)} variations in {t_ms:.1f}ms")
-            return [query] + variations
+            logger.info(f"Generated {len(variations)} search variations in {t_ms:.1f}ms")
+            return [query] + variations  # Include original as first result
         except Exception as e:
             t_ms = (time.time() - t_start) * 1000
-            logger.error(f"Expansion failed in {t_ms:.1f}ms: {e}")
-            return [query]
+            logger.error(f"Failed to generate search variations in {t_ms:.1f}ms: {e}")
+            return [query]  # Fall back to original query only
 
     async def expand_async(self, query: str) -> List[str]:
         """
-        Generates 3 diverse search variations of the input query asynchronously.
-        Returns [original_query, variation_1, variation_2, variation_3].
+        Generate search variations asynchronously.
+        
+        Same as expand() but runs in the background without blocking.
         """
         t_start = time.time()
         prompt = (
-            "Generate 3 diverse search variations of the following query, "
-            "focused on different keywords. Return ONLY a JSON list of strings "
-            "under the key 'variations'.\n"
-            f"Query: {query}"
+            "Generate 3 different ways to search for information about this question. "
+            "Focus on different keywords each time. Return only JSON.\n"
+            f"Question: {query}"
         )
         client = self.async_client or self.client
         try:
@@ -67,9 +77,9 @@ class QueryExpander:
             )
             variations = json.loads(completion.choices[0].message.content).get("variations", [])
             t_ms = (time.time() - t_start) * 1000
-            logger.info(f"Generated {len(variations)} variations async in {t_ms:.1f}ms")
+            logger.info(f"Generated {len(variations)} search variations async in {t_ms:.1f}ms")
             return [query] + variations
         except Exception as e:
             t_ms = (time.time() - t_start) * 1000
-            logger.error(f"Async expansion failed in {t_ms:.1f}ms: {e}")
+            logger.error(f"Failed to generate search variations async in {t_ms:.1f}ms: {e}")
             return [query]

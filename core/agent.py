@@ -1,3 +1,18 @@
+"""
+RAG Agent - An AI That Can Think and Act
+
+The agent is an AI that can reason about what to do next and take actions.
+Instead of just answering from documents, it can:
+- Search the web for current information
+- Look up system statistics
+- Access your uploaded documents
+- Do calculations
+- Scrape web pages for details
+
+It uses a "ReAct" loop: think about what to do, take action, observe results,
+and repeat until it has enough information to answer.
+"""
+
 import re
 import logging
 import psutil
@@ -8,14 +23,20 @@ from core.config import TOKENIZER_ENCODING
 logger = logging.getLogger("RAG.Agent")
 tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
 
+
 def count_tokens(text: str) -> int:
+    """Count tokens in text (used for context size limits)."""
     if not text:
         return 0
     return len(tokenizer.encode(text))
 
 
 def mock_web_search(query: str) -> str:
-    """Simulates a deterministic, offline web search response for web agent queries."""
+    """
+    Simulate a web search when we're offline or in testing mode.
+    
+    Returns plausible but fake search results for demonstration purposes.
+    """
     query_lower = query.lower()
     if "google" in query_lower:
         return (
@@ -94,28 +115,37 @@ Critical Response Quality & Formatting Guidelines:
 
 class RAGAgent:
     """
-    An autonomous ReAct agent running on top of RAGContextEngine.
+    An AI that thinks through problems and takes actions to answer complex questions.
+    
+    Instead of just using documents, this agent can:
+    - Search the web for current information
+    - Look up system statistics  
+    - Access your uploaded documents
+    - Do calculations on your behalf
+    - Scrape web pages for details
+    
+    It works in a think-act-observe loop (ReAct) to gather information before answering.
     """
 
     def __init__(self, engine):
         self.engine = engine
-        self.max_iterations = 3
+        self.max_iterations = 3  # Max tool uses per question
         self._debug_mode = False
         from core.graph import RAGLangGraph
         self.graph = RAGLangGraph(self)
 
     def enable_debug(self, enabled: bool = True):
-        """Enable/disable debug tracking for LLM calls and goal progression."""
+        """Show detailed logs of the agent's thinking process."""
         self._debug_mode = enabled
 
     def parse_action(self, text: str) -> Optional[tuple]:
-        """Parses action from LLM response. E.g. Action: web_search[my query]"""
+        """Parse the AI's response to find tool calls like Action: web_search[query]."""
         match = re.search(r"Action:\s*([\w\-]+)\s*(?:\[(.*?)\])?", text, re.IGNORECASE | re.DOTALL)
         if match:
             tool_name = match.group(1).strip().lower()
             tool_arg = match.group(2) or ""
             tool_arg = tool_arg.strip()
-            # Strip outer quotes/backticks if present
+            # Remove surrounding quotes or backticks if present
             if len(tool_arg) >= 2 and (
                 (tool_arg.startswith('"') and tool_arg.endswith('"')) or
                 (tool_arg.startswith("'") and tool_arg.endswith("'")) or
@@ -126,9 +156,7 @@ class RAGAgent:
         return None
 
     def run_stream(self, query: str, session_id: str = "default", source_filter: Optional[str] = None, context_limit: Optional[int] = None) -> Generator[Dict, None, None]:
-        """
-        Executes the ReAct loop using LangGraph and yields events for streaming.
-        """
+        """Run the agent synchronously, yielding events as they happen."""
         import asyncio
         loop = asyncio.new_event_loop()
         try:
@@ -146,9 +174,7 @@ class RAGAgent:
 
 
     async def run_stream_async(self, query: str, session_id: str = "default", source_filter: Optional[str] = None, context_limit: Optional[int] = None) -> AsyncGenerator[Dict, None]:
-        """
-        Executes the ReAct loop using LangGraph asynchronously and yields events.
-        """
+        """Run the agent asynchronously, yielding events as they happen."""
         logger.info(f"Agent starting via LangGraph (Async) for query: {query[:50]}... | Limit: {context_limit}")
         
         initial_state = {

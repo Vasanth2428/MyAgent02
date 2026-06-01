@@ -1,13 +1,15 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - ORCHESTRATION MODULE (ASYNC REFACTORED)
-================================================================================
-The Engine is the central brain of the system, delegating to helper services:
-1. Memory Service (core/services/memory_service.py)
-2. Retrieval Service (core/services/retrieval_service.py)
-3. Generation Service (core/services/generation_service.py)
-4. Context Overflow Service (core/services/overflow_service.py)
-5. Telemetry Service (core/services/telemetry_service.py)
+RAG Context Engine - The Brain of the System
+
+This engine coordinates all the steps needed to answer your questions:
+1. Memory Service - Remembers what was said in the conversation
+2. Retrieval Service - Finds relevant document chunks from the database
+3. Generation Service - Asks the AI to write the answer
+4. Context Overflow Service - Handles situations when there's too much context
+5. Telemetry Service - Tracks performance and costs
+
+Think of it like a librarian who remembers your conversation history, finds relevant
+books, and helps you craft a response to your question.
 """
 
 import logging
@@ -32,6 +34,7 @@ from core.expander import QueryExpander
 from core.hyde import HyDEGenerator
 from core.registry import KnowledgeRegistry
 from core.services import RetrievalService, MemoryService, GenerationService, ContextOverflowService, TelemetryService
+from core.services.generation_service import GenerationResult
 from core.security import sanitize_document_text
 
 logger = logging.getLogger("RAG.Engine")
@@ -47,8 +50,12 @@ def count_tokens(text: str) -> int:
 
 class RAGContextEngine:
     """
-    Main orchestrator for the RAG pipeline. Delegates to modular services.
-    Supports both synchronous and native asynchronous interfaces.
+    The main orchestrator that handles question answering.
+    
+    This class brings everything together - it finds relevant documents from your
+    knowledge base, remembers your conversation, and generates helpful answers.
+    It can work synchronously (one step at a time) or asynchronously (multiple steps
+    happening at once for better performance).
     """
 
     def __init__(self, retriever: WeaviateRetriever, pipeline_config: Optional[PipelineConfig] = None):
@@ -283,11 +290,11 @@ class RAGContextEngine:
             )
 
     def _phase_generate(self, query: str, final_context: str, latencies: dict, context_chunks: List[str] = None):
-        response, prompt, exact_tokens, ctx_used_pct, grounding_score = self.generation_service.generate(
+        result: GenerationResult = self.generation_service.generate(
             query, final_context, count_tokens, context_chunks
         )
-        latencies['grounding_score'] = grounding_score
-        return response, prompt, exact_tokens, ctx_used_pct, grounding_score
+        latencies['grounding_score'] = result.grounding_score
+        return result.response, result.prompt, result.token_usage, result.context_used_percent, result.grounding_score
 
     def _phase_generate_stream(self, query: str, final_context: str, latencies: dict) -> Generator[Dict, None, None]:
         t = time.time()
@@ -450,12 +457,12 @@ class RAGContextEngine:
 
     async def _phase_generate_async(self, query: str, final_context: str, latencies: dict, context_chunks: List[str] = None):
         t = time.time()
-        response, prompt, exact_tokens, ctx_used_pct, grounding_score = await self.generation_service.generate_async(
+        result: GenerationResult = await self.generation_service.generate_async(
             query, final_context, count_tokens, context_chunks
         )
         latencies['phase_6_generation_ms'] = round((time.time() - t) * 1000, 2)
-        latencies['grounding_score'] = grounding_score
-        return response, prompt, exact_tokens, ctx_used_pct, grounding_score
+        latencies['grounding_score'] = result.grounding_score
+        return result.response, result.prompt, result.token_usage, result.context_used_percent, result.grounding_score
 
     async def _phase_generate_stream_async(self, query: str, final_context: str, latencies: dict) -> AsyncGenerator[Dict, None]:
         t = time.time()

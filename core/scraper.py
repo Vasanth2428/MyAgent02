@@ -1,16 +1,78 @@
+"""
+Web Scraper - Fetching Content from URLs
+
+This module safely fetches and extracts text from web pages. It includes security
+measures to prevent SSRF (Server-Side Request Forgery) attacks that try to
+access internal network resources.
+
+Features:
+- Extracts readable text from HTML
+- Validates URLs to block access to private/internal networks
+- Supports both sync and async fetching
+- Handles multiple concurrent requests safely
+"""
+
 import re
 import logging
 import asyncio
 import aiohttp
 import requests
 from html.parser import HTMLParser
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 
 logger = logging.getLogger("RAG.Scraper")
 
 _aiohttp_session: Optional[aiohttp.ClientSession] = None
 _executor = ThreadPoolExecutor(max_workers=10)
+
+
+def _is_private_ip(ip_str: str) -> bool:
+    """Check if IP address is private/internal and should be blocked for security."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
+
+
+def _validate_url_for_ssrf(url: str) -> Tuple[bool, str]:
+    """
+    Validates URL for SSRF protection.
+    Returns (is_valid, error_message).
+    Blocks private IPs, localhost, and internal network ranges.
+    """
+    from urllib.parse import urlparse
+    import socket
+    
+    if not url or not isinstance(url, str):
+        return False, "Empty or invalid URL"
+    
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    
+    if not hostname:
+        return False, "No hostname in URL"
+    
+    # Block obvious internal hostnames
+    blocked_hostnames = {'localhost', '127.0.0.1', '0.0.0.0', '::1', 'localhost.localdomain'}
+    if hostname.lower() in blocked_hostnames:
+        return False, f"Blocked internal hostname: {hostname}"
+    
+    # Resolve hostname and check IP
+    try:
+        resolved_ips = socket.getaddrinfo(hostname, parsed.port or 80)
+        for family, _, _, _, sockaddr in resolved_ips:
+            ip_str = sockaddr[0]
+            if _is_private_ip(ip_str):
+                return False, f"Blocked private IP: {ip_str}"
+    except socket.gaierror:
+        return False, f"Could not resolve hostname: {hostname}"
+    except Exception as e:
+        return False, f"DNS validation error: {e}"
+    
+    return True, ""
 
 async def _get_aiohttp_session() -> aiohttp.ClientSession:
     global _aiohttp_session
@@ -69,6 +131,12 @@ def scrape_web_page(url: str, max_chars: int = 6000) -> str:
     url = url.strip()
     if not url:
         return "Error: Scrape request received an empty URL."
+
+    # SSRF protection
+    is_valid, error_msg = _validate_url_for_ssrf(url)
+    if not is_valid:
+        logger.warning(f"SSRF blocked: {error_msg}")
+        return f"Error: {error_msg}"
 
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "https://" + url
@@ -139,6 +207,12 @@ async def scrape_web_page_async(url: str, max_chars: int = 6000) -> str:
     url = url.strip()
     if not url:
         return "Error: Scrape request received an empty URL."
+
+    # SSRF protection
+    is_valid, error_msg = _validate_url_for_ssrf(url)
+    if not is_valid:
+        logger.warning(f"SSRF blocked: {error_msg}")
+        return f"Error: {error_msg}"
 
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "https://" + url

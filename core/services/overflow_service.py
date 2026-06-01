@@ -7,13 +7,25 @@ from core.config import CONTEXT_WINDOW_LIMIT, TOKENIZER_ENCODING
 logger = logging.getLogger("RAG.Services.Overflow")
 tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
 
+
 class ContextOverflowService:
     """
-    Manages overflow check and dynamic context pruning (memory sync, re-compression, hard truncation).
-    Exposes both synchronous and asynchronous robust methods.
+    Handles what happens when there's too much context for the AI.
+    
+    The AI has limited "thinking space" (called a context window). When the
+    conversation history and found documents exceed this limit, this service
+    applies recovery steps in order:
+    
+    1. Remove old conversation messages (forgetting the earliest ones)
+    2. Compress the documents more aggressively
+    3. Hard truncate if we still don't fit
+    
+    This ensures we always have room for the AI to work while losing as
+    little relevant information as possible.
     """
+
     def __init__(self, compressor):
-        self.compressor = compressor
+        self.compressor = compressor  # Use the compressor to shrink documents
 
     def handle_context_overflow(
         self, 

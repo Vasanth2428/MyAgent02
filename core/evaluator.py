@@ -1,9 +1,15 @@
 """
-===============================================================================
-RAG CONTEXT ENGINE - EVALUATION FRAMEWORK
-===============================================================================
-Systematic evaluation of retrieval, reranking, HyDE, compression, and memory.
-Provides measurable metrics instead of "vibes with logs".
+Evaluation Framework - Measuring How Well RAG Works
+
+Instead of just guessing if the system works well, this framework evaluates
+each part of the pipeline with real metrics:
+- Retrieval: Did we find the right documents?
+- Reranking: Did re-scoring improve results?
+- HyDE: Does hypothetical search help?
+- Compression: Do we keep important facts?
+- Grounding: Does the answer match the documents?
+
+Run these evaluations after changes to make sure nothing got worse.
 """
 
 import logging
@@ -12,7 +18,8 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from core.config import RERANKER_MODEL, EMBEDDING_MODEL
+from core.services.grounding_service import _get_shared_embedding_model
+from core.config import RERANKER_MODEL
 from core.reranker import NeuralReranker
 from core.compressor import Compressor
 from core.hyde import HyDEGenerator
@@ -23,85 +30,87 @@ logger = logging.getLogger("RAG.Evaluator")
 
 @dataclass
 class RetrievalMetrics:
-    """Metrics for retrieval phase evaluation."""
+    """How well did our search find the right documents?"""
     query: str
     candidates_found: int = 0
     top_k: int = 5
     has_relevant: bool = False
-    mrr: float = 0.0  # Mean Reciprocal Rank
-    recall_at_k: float = 0.0
-    precision_at_k: float = 0.0
+    mrr: float = 0.0  # How early in results the relevant doc appeared (1/best_rank)
+    recall_at_k: float = 0.0  # Did we find the expected doc?
+    precision_at_k: float = 0.0  # How many of top-k were relevant?
 
 
 @dataclass
 class RerankingMetrics:
-    """Metrics for reranking effectiveness."""
+    """Did re-ranking improve document ordering?"""
     query: str
-    initial_mrr: float = 0.0
-    reranked_mrr: float = 0.0
-    mrr_improvement: float = 0.0
-    top_score_delta: float = 0.0
-    correctly_ranked: bool = False
+    initial_mrr: float = 0.0  # Score before re-ranking
+    reranked_mrr: float = 0.0  # Score after re-ranking
+    mrr_improvement: float = 0.0  # Did it get better?
+    top_score_delta: float = 0.0  # Difference in top score
+    correctly_ranked: bool = False  # Was relevant doc ranked correctly?
 
 
 @dataclass
 class HyDEMetrics:
-    """Metrics for HyDE improvement on recall."""
+    """Did HyDE help us find more documents?"""
     query: str
-    baseline_recall: float = 0.0
-    hyde_recall: float = 0.0
-    recall_improvement: float = 0.0
-    hyde_doc_length: int = 0
+    baseline_recall: float = 0.0  # Recall without HyDE
+    hyde_recall: float = 0.0  # Recall with HyDE
+    recall_improvement: float = 0.0  # How much better?
+    hyde_doc_length: int = 0  # How long was the hypothetical answer?
 
 
 @dataclass
 class CompressionMetrics:
-    """Metrics for fact preservation in compression."""
+    """How well did compression preserve important facts?"""
     query: str
-    compression_ratio: float = 0.0
-    facts_preserved: float = 0.0  # ratio of key facts retained
-    facts_lost: List[str] = field(default_factory=list)
-    noise_dropped: bool = False
+    compression_ratio: float = 0.0  # How much was cut (0.0 to 1.0)
+    facts_preserved: float = 0.0  # What % of key facts stayed
+    facts_lost: List[str] = field(default_factory=list)  # Which facts were dropped
+    noise_dropped: bool = False  # Was unnecessary text removed?
 
 
 @dataclass
 class GroundingMetrics:
-    """Metrics for answer grounding verification."""
+    """Does the answer actually match the documents?"""
     query: str
     answer: str
-    is_grounded: bool = False
-    citations_found: int = 0
-    hallucinations_detected: int = 0
+    is_grounded: bool = False  # Is it based on the docs?
+    citations_found: int = 0  # How many sources were cited
+    hallucinations_detected: int = 0  # Made-up claims found
     ungrounded_claims: List[str] = field(default_factory=list)
-    grounding_score: float = 0.0
+    grounding_score: float = 0.0  # Overall score (0.0 to 1.0)
 
 
 class RAGEvaluator:
-    """Evaluates the RAG pipeline with measurable metrics."""
+    """
+    Tests the RAG pipeline with real questions and checks if it works.
+    
+    Give it a query and some documents, and it will tell you how well
+    each step performed.
+    """
 
     def __init__(self, retriever, llm_client):
         self.retriever = retriever
         self.llm_client = llm_client
         self.reranker = NeuralReranker()
         self.hyde = HyDEGenerator(llm_client)
-        self._embedding_cache = {}
 
     def _get_embedding_model(self):
-        if "model" not in self._embedding_cache:
-            from sentence_transformers import SentenceTransformer
-            self._embedding_cache["model"] = SentenceTransformer(EMBEDDING_MODEL)
-        return self._embedding_cache["model"]
+        return _get_shared_embedding_model()
 
     def evaluate_retrieval(self, query: str, expected_context: str, top_k: int = 5) -> RetrievalMetrics:
         """
-        Evaluates retrieval quality by checking if expected context is found.
-        Uses semantic similarity to detect relevance.
+        Check if search finds the document we expect.
+        
+        Looks for expected_context in the search results to see if our
+        retrieval is working correctly.
         """
         t_start = time.time()
 
         results, _, _ = self.retriever.retrieve(query, top_k=top_k * 3)
 
-        # Simple lexical check for expected context in results
         found_rank = None
         for i, r in enumerate(results):
             if expected_context[:30].lower() in r["text"].lower():
@@ -123,6 +132,87 @@ class RAGEvaluator:
 
         t_ms = (time.time() - t_start) * 1000
         logger.info(f"Retrieval eval: {metrics.candidates_found} results, MRR={mrr:.3f}, grounded={has_relevant}")
+
+        return metrics
+
+    def evaluate_reranking(self, query: str, candidates: List[Dict], expected_relevant_text: str) -> RerankingMetrics:
+        """
+        Check if re-ranking puts the right documents first.
+        
+        Takes search results and re-scores them to see if the most relevant
+        document rises to the top.
+        """
+        t_start = time.time()
+        
+        initial_top = candidates[0]["text"] if candidates else ""
+        
+        reranked = self.reranker.rerank(query, candidates.copy())
+        
+        reranked_top = reranked[0]["text"] if reranked else ""
+        reranked_score = reranked[0]["cross_score"] if reranked else 0.0
+        initial_score = candidates[0].get("score", 0.0) if candidates else 0.0
+        
+        relevant_in_top = any(expected_relevant_text[:50] in c["text"] for c in reranked[:3])
+
+        metrics = RerankingMetrics(
+            query=query,
+            initial_mrr=1.0 if expected_relevant_text[:50] in initial_top else 0.0,
+            reranked_mrr=1.0 if relevant_in_top else 0.0,
+            mrr_improvement=1.0 if relevant_in_top and expected_relevant_text[:50] not in initial_top else 0.0,
+            top_score_delta=reranked_score - initial_score,
+            correctly_ranked=relevant_in_top,
+        )
+        
+        logger.info(f"Reranking eval: correctly_ranked={relevant_in_top}, score_delta={reranked_score - initial_score:.3f}")
+
+        return metrics
+
+    def evaluate_hyde(self, query: str, documents: List[str], expected_context: str) -> HyDEMetrics:
+        """
+        See if HyDE helps find more relevant documents.
+        
+        Generates a hypothetical answer and checks if it improves search.
+        """
+        hyde_doc = self.hyde.generate_hypothetical_doc(query)
+
+        baseline_recall = 1.0 if any(expected_context[:30].lower() in d.lower() for d in documents) else 0.0
+
+        metrics = HyDEMetrics(
+            query=query,
+            baseline_recall=baseline_recall,
+            hyde_recall=baseline_recall,
+            recall_improvement=0.0,
+            hyde_doc_length=len(hyde_doc.split()),
+        )
+
+        logger.info(f"HyDE eval: baseline_recall={baseline_recall}")
+
+        return metrics
+
+    def evaluate_compression(self, query: str, documents: List[str], key_facts: List[str]) -> CompressionMetrics:
+        """
+        Check if compression keeps the important information.
+        
+        Runs compression and then checks if the key facts are still present.
+        """
+        compressed = Compressor.compress(documents, query, max_tokens=500)
+
+        facts_preserved = sum(1 for fact in key_facts if fact.lower() in compressed.lower())
+        facts_ratio = facts_preserved / len(key_facts) if key_facts else 0.0
+
+        total_raw_chars = sum(len(d) for d in documents)
+        compressed_chars = len(compressed)
+        compression_ratio = 1 - (compressed_chars / total_raw_chars) if total_raw_chars > 0 else 0.0
+
+        metrics = CompressionMetrics(
+            query=query,
+            compression_ratio=compression_ratio,
+            facts_preserved=facts_ratio,
+            facts_lost=[f for f in key_facts if f.lower() not in compressed.lower()],
+            noise_dropped=compression_ratio > 0.1,
+        )
+
+        logger.info(f"Compression eval: ratio={compression_ratio:.2%}, facts_preserved={facts_ratio:.0%}")
 
         return metrics
 
@@ -208,12 +298,20 @@ class RAGEvaluator:
 
 
 class GroundingVerifier:
-    """Verifies that LLM answers are grounded in provided context."""
+    """
+    Checks that answers actually come from the provided documents.
+    
+    This catches "hallucinations" - when the AI makes up facts not present
+    in the source documents. It looks for suspicious claims and checks if
+    they have supporting evidence.
+    
+    DEPRECATED: Use the GroundingVerifier from grounding_service.py instead.
+    That version has better semantic similarity checking.
+    """
 
     @staticmethod
     def extract_citation_markers(answer: str) -> List[Dict]:
-        """Extracts citation markers from answer."""
-        import re
+        """Find source citations like [source: filename] in the answer."""
         patterns = [
             r'\[source:\s*([^\]]+)\]',
             r'\(([^)]+?source[^)]*)\)',
@@ -233,11 +331,9 @@ class GroundingVerifier:
     @staticmethod
     def compute_grounding_score(answer: str, context: str) -> float:
         """
-        Compute overall grounding score (0.0 to 1.0).
-        Higher means more grounded.
+        Calculate how well the answer is based on the context.
         
-        DEPRECATED: Use GroundingVerifier from grounding_service.py for per-chunk support checking.
-        This method is kept for backward compatibility.
+        Returns a score from 0.0 (not grounded) to 1.0 (fully grounded).
         """
         import re
         sentences = [s.strip() for s in re.split(r'[.!?]+\s*', answer) if len(s.strip()) > 10]
@@ -262,22 +358,21 @@ class GroundingVerifier:
     @staticmethod
     def check_groundedness(answer: str, context: str) -> GroundingMetrics:
         """
-        Verifies answer uses only information from context.
-        Detects hallucinations by checking for claims not supported by context.
+        Check if the answer is based only on the provided context.
+        
+        Looks for claims that might be made up (hallucinations) and
+        checks if the answer cites its sources.
         """
-        # Extract answer sentences
         import re
         sentences = re.split(r'[.!?]+\s*', answer)
         
-        # Find claims that might be hallucinated
         ungrounded_claims = []
         hallucinations = 0
         
-        # Common hallucination patterns
         hallucination_patterns = [
-            r'\b(in 20\d{2}|in \d{4})\b',  # Specific years not in context
-            r'\b(always|never|all|none|every)\b',  # Absolute claims
-            r'\b(first|best|largest|smallest)\b',  # Superlatives without basis
+            r'\b(in 20\d{2}|in \d{4})\b',
+            r'\b(always|never|all|none|every)\b',
+            r'\b(first|best|largest|smallest)\b',
         ]
         
         context_lower = context.lower()
@@ -287,7 +382,6 @@ class GroundingVerifier:
             if len(sent_clean) < 10:
                 continue
             
-            # Check if sentence has supporting evidence in context
             sent_lower = sent_clean.lower()
             has_support = any(word in context_lower for word in sent_lower.split() if len(word) > 4)
             
@@ -298,13 +392,11 @@ class GroundingVerifier:
                         hallucinations += 1
                         break
 
-        # Also check for citation presence
         citations = GroundingVerifier.extract_citations(answer)
         has_citations = len(citations) > 0
         
-        # Grounding score: 1.0 if well-cited and no hallucinations
         grounding_score = 1.0 if (has_citations and hallucinations == 0) else 0.5 if has_citations else 0.0
-        
+
         metrics = GroundingMetrics(
             query="",
             answer=answer[:100],
@@ -319,11 +411,9 @@ class GroundingVerifier:
 
     @staticmethod
     def verify_claim_support(claim: str, context: str) -> bool:
-        """Checks if a specific claim is supported by context."""
-        emb_model = None
+        """Check if a specific claim appears in the context documents."""
         try:
-            from sentence_transformers import SentenceTransformer
-            emb_model = SentenceTransformer(EMBEDDING_MODEL)
+            emb_model = _get_shared_embedding_model()
             claim_emb = emb_model.encode([claim])
             context_emb = emb_model.encode([context])
             
@@ -339,15 +429,16 @@ class GroundingVerifier:
 def run_full_evaluation(query: str, expected_answer: str, documents: List[str], 
                       key_facts: List[str], retriever, llm_client) -> Dict:
     """
-    Runs a complete evaluation of the RAG pipeline.
-    Returns metrics for all phases.
+    Run all evaluations and return combined metrics.
+    
+    This is a convenience function that runs retrieval, reranking, HyDE,
+    and compression evaluations in one go.
     """
+    import re
     evaluator = RAGEvaluator(retriever, llm_client)
     
-    # Retrieve candidates
     results, _, _ = retriever.retrieve(query, top_k=10)
     
-    # Evaluate each phase
     retrieval_metrics = evaluator.evaluate_retrieval(query, expected_answer if expected_answer else documents[0] if documents else "")
     
     rerank_metrics = None

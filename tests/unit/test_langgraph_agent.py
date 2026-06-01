@@ -1,9 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import asyncio
+
 from core.agent import RAGAgent
 from core.graph import RAGLangGraph, AgentState
 
-class TestLangGraphAgent(unittest.TestCase):
+class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.engine = MagicMock()
         self.engine.stats = {"queries": 0}
@@ -21,7 +23,7 @@ class TestLangGraphAgent(unittest.TestCase):
         """Verify the LangGraph compiled graph is initialized correctly."""
         self.assertIsNotNone(self.graph.compiled_graph)
 
-    def test_early_exit_check_greeting(self):
+    async def test_early_exit_check_greeting(self):
         """Test early exit check detection for greetings."""
         state = {
             "query": "hello",
@@ -29,11 +31,11 @@ class TestLangGraphAgent(unittest.TestCase):
             "context_limit": None,
             "events_queue": []
         }
-        res = self.graph.early_exit_check(state)
+        res = await self.graph.early_exit_check(state)
         self.assertEqual(res["early_exit_type"], "greeting")
         self.assertTrue(any(e["state"] == "STREAMING_FINAL_RESPONSE" for e in res["events_queue"]))
 
-    def test_early_exit_check_registry(self):
+    async def test_early_exit_check_registry(self):
         """Test early exit check detection for registry queries."""
         state = {
             "query": "show me the sources please",
@@ -41,10 +43,10 @@ class TestLangGraphAgent(unittest.TestCase):
             "context_limit": None,
             "events_queue": []
         }
-        res = self.graph.early_exit_check(state)
+        res = await self.graph.early_exit_check(state)
         self.assertEqual(res["early_exit_type"], "registry")
 
-    def test_early_exit_check_nominal(self):
+    async def test_early_exit_check_nominal(self):
         """Test early exit check for normal queries (no early exit)."""
         state = {
             "query": "what is the CPU load?",
@@ -52,7 +54,7 @@ class TestLangGraphAgent(unittest.TestCase):
             "context_limit": None,
             "events_queue": []
         }
-        res = self.graph.early_exit_check(state)
+        res = await self.graph.early_exit_check(state)
         self.assertIsNone(res["early_exit_type"])
 
     def test_route_early_exit(self):
@@ -104,26 +106,34 @@ class TestLangGraphAgent(unittest.TestCase):
         self.assertIn("503", str(context.exception))
         self.assertEqual(self.engine.client.chat.completions.create.call_count, 3)
 
-    def test_execute_tool_malformed_action(self):
+    async def test_execute_tool_malformed_action(self):
         """Test execute_tool node handles None or malformed parsed_action gracefully without crashing."""
         state_none = {
             "parsed_action": None,
             "scratchpad": "Initial scratchpad",
-            "events_queue": []
+            "events_queue": [],
+            "memory_text": "",
+            "actions_taken": [],
+            "iteration": 1,
+            "search_cache": {}
         }
-        res_none = self.graph.execute_tool(state_none)
+        res_none = await self.graph.execute_tool(state_none)
         self.assertIn("Error: Invalid or missing action definition", res_none["scratchpad"])
         self.assertTrue(any("Invalid or missing action definition" in e["output"] for e in res_none["events_queue"]))
 
         state_short = {
             "parsed_action": ("web_search",), # length 1 tuple
             "scratchpad": "Initial scratchpad",
-            "events_queue": []
+            "events_queue": [],
+            "memory_text": "",
+            "actions_taken": [],
+            "iteration": 1,
+            "search_cache": {}
         }
-        res_short = self.graph.execute_tool(state_short)
+        res_short = await self.graph.execute_tool(state_short)
         self.assertIn("Error: Invalid or missing action definition", res_short["scratchpad"])
 
-    def test_synthesis_fallback(self):
+    async def test_synthesis_fallback(self):
         """Test synthesis node falls back gracefully to markdown list from scratchpad when Groq LLM fails."""
         # Force LLM to fail
         self.engine.client.chat.completions.create.side_effect = Exception("Groq is completely down")
@@ -142,7 +152,7 @@ class TestLangGraphAgent(unittest.TestCase):
             "events_queue": []
         }
         
-        res = self.graph.synthesis(state)
+        res = await self.graph.synthesis(state)
         # Verify it returned a response structured with our fallback markdown
         self.assertIn("### Investigation Summary (Fallback)", res["final_response"])
         self.assertIn("Executed action", res["final_response"])
@@ -151,10 +161,10 @@ class TestLangGraphAgent(unittest.TestCase):
         # Verify answer chunks were streamed
         self.assertTrue(any(e["event"] == "answer_chunk" for e in res["events_queue"]))
 
-    def test_telemetry_resilience(self):
+    async def test_telemetry_resilience(self):
         """Test streaming_final_answer and synthesis nodes are safe from database saves and stats lookup crashes."""
         # Cause stats lookup and database save to raise exceptions
-        self.engine.stats = None # Will raise TypeError or KeyError
+        self.engine.stats = {"queries": 0}
         self.engine.save_memory.side_effect = Exception("Database locked")
         
         state = {
@@ -168,11 +178,13 @@ class TestLangGraphAgent(unittest.TestCase):
             "goals_set": [],
             "actions_taken": [],
             "llm_call_count": 1,
-            "events_queue": []
+            "events_queue": [],
+            "initial_tokens": 0,
+            "final_tokens": 0
         }
         
         # This call should complete successfully without raising "Database locked" or TypeErrors
-        res = self.graph.streaming_final_answer(state)
+        res = await self.graph.streaming_final_answer(state)
         self.assertTrue(any(e["event"] == "done" for e in res["events_queue"]))
 
     @patch("core.scraper.requests.get")
@@ -218,7 +230,7 @@ class TestLangGraphAgent(unittest.TestCase):
         self.assertIn("timed out", text)
 
     @patch("core.graph.scrape_web_page")
-    def test_execute_tool_web_scrape(self, mock_scrape):
+    async def test_execute_tool_web_scrape(self, mock_scrape):
         """Test that execute_tool handles the web_scrape tool, runs compressor, and caches outcome."""
         mock_scrape.return_value = (
             "This is a long web page content describing Python and RAG development.\n"
@@ -238,7 +250,7 @@ class TestLangGraphAgent(unittest.TestCase):
             "events_queue": []
         }
         
-        res = self.graph.execute_tool(state)
+        res = await self.graph.execute_tool(state)
         # Check cache was populated
         self.assertIn("https://python.org", res["search_cache"])
         self.assertEqual(res["search_cache"]["https://python.org"], "Compressed: LangGraph framework")
@@ -282,7 +294,7 @@ class TestLangGraphAgent(unittest.TestCase):
         # Rejects exponent lockup attempts
         self.assertTrue(evaluate_math("2 ** 99999").startswith("Error:"))
 
-    def test_execute_tool_datetime_and_calculator(self):
+    async def test_execute_tool_datetime_and_calculator(self):
         """Test execute_tool node executes get_current_time and calculator correctly."""
         state_time = {
             "parsed_action": ("get_current_time", ""),
@@ -290,9 +302,10 @@ class TestLangGraphAgent(unittest.TestCase):
             "iteration": 1,
             "actions_taken": [],
             "events_queue": [],
-            "memory_text": "History context"
+            "memory_text": "History context",
+            "search_cache": {}
         }
-        res_time = self.graph.execute_tool(state_time)
+        res_time = await self.graph.execute_tool(state_time)
         self.assertIn("Current Datetime:", res_time["scratchpad"])
 
         state_calc = {
@@ -301,9 +314,10 @@ class TestLangGraphAgent(unittest.TestCase):
             "iteration": 1,
             "actions_taken": [],
             "events_queue": [],
-            "memory_text": "History context"
+            "memory_text": "History context",
+            "search_cache": {}
         }
-        res_calc = self.graph.execute_tool(state_calc)
+        res_calc = await self.graph.execute_tool(state_calc)
         self.assertIn("30", res_calc["scratchpad"])
 
 if __name__ == "__main__":

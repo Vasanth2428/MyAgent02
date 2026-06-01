@@ -1,3 +1,11 @@
+"""
+Knowledge Registry - What Documents Do We Have?
+
+This module keeps track of all the documents you've uploaded. It lets the AI
+know what's available to search through and can list sources, topics, and
+document domains when asked.
+"""
+
 import os
 import logging
 from typing import List, Dict, Set
@@ -7,12 +15,18 @@ logger = logging.getLogger("RAG.Registry")
 
 class KnowledgeRegistry:
     """
-    Registry tracking indexed datasets, document domains, schemas, topics, and sources.
-    Provides knowledge awareness.
+    Keeps track of all uploaded documents and their metadata.
+    
+    When someone asks "What documents do you have?" or "What can you search?",
+    this class provides the list. It tracks:
+    - Document sources (filenames)
+    - Document domains (what kind of content: docs, sales data, etc.)
+    - Available schemas (database structures)
+    - Topics/tags found in documents
     """
 
     def __init__(self, engine):
-        self.engine = engine
+        self.engine = engine  # Reference to the main engine for database access
 
     def get_sources(self) -> Set[str]:
         """Returns the set of unique source names in the knowledge base."""

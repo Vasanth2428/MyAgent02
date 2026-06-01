@@ -613,7 +613,7 @@ class RAGLangGraph:
                     observation = compressed if compressed.strip() else "No matching documents found in database."
                     search_cache[tool_arg] = observation
             elif tool_name == "get_system_stats":
-                doc_count = await asyncio.to_thread(self.retriever.get_count)
+                doc_count = await asyncio.to_thread(self.engine.retriever.get_count)
                 cpu = psutil.cpu_percent(interval=None)
                 ram = psutil.virtual_memory().percent
                 observation = f"System Stats: CPU={cpu}%, RAM={ram}%, Total Indexed Documents={doc_count}"

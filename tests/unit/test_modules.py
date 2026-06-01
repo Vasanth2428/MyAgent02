@@ -50,7 +50,7 @@ class TestCompressor(unittest.TestCase):
 class TestMemory(unittest.TestCase):
     def test_memory_deduplication(self):
         mem = ConversationMemory()
-        with patch('core.memory._get_embedding_model') as mock_model:
+        with patch('core.services.grounding_service._get_shared_embedding_model') as mock_model:
             mock_encoder = MagicMock()
             mock_encoder.encode.return_value = np.array([0.1, 0.2, 0.3])
             mock_model.return_value = mock_encoder
@@ -67,7 +67,7 @@ class TestMemory(unittest.TestCase):
         mem = ConversationMemory()
         sim_vec = np.array([1.0, 0.0, 0.0])
         
-        with patch('core.memory._get_embedding_model') as mock_model:
+        with patch('core.services.grounding_service._get_shared_embedding_model') as mock_model:
             mock_encoder = MagicMock()
             mock_encoder.encode.return_value = sim_vec
             mock_model.return_value = mock_encoder
@@ -93,7 +93,7 @@ class TestMemory(unittest.TestCase):
 
     def test_decay_effect(self):
         mem = ConversationMemory(decay_rate=100.0) # Instant decay
-        with patch('core.memory._get_embedding_model') as mock_model:
+        with patch('core.services.grounding_service._get_shared_embedding_model') as mock_model:
             mock_encoder = MagicMock()
             mock_encoder.encode.return_value = np.array([0.1, 0.2, 0.3])
             mock_model.return_value = mock_encoder
@@ -370,6 +370,122 @@ class TestSecuritySanitization(unittest.TestCase):
         from core.security import sanitize_document_text
         self.assertEqual(sanitize_document_text(""), "")
         self.assertEqual(sanitize_document_text(None), "")
+
+    def test_ssrf_blocks_localhost(self):
+        """SSRF protection blocks localhost URLs."""
+        from core.scraper import _validate_url_for_ssrf
+        is_valid, error = _validate_url_for_ssrf("http://localhost/test")
+        self.assertFalse(is_valid)
+        self.assertIn("localhost", error.lower())
+
+    def test_ssrf_blocks_private_ip(self):
+        """SSRF protection blocks private IP addresses."""
+        from core.scraper import _validate_url_for_ssrf
+        is_valid, error = _validate_url_for_ssrf("http://192.168.1.1/test")
+        self.assertFalse(is_valid)
+        self.assertIn("private", error.lower())
+
+    def test_ssrf_blocks_127_0_0_1(self):
+        """SSRF protection blocks 127.0.0.1."""
+        from core.scraper import _validate_url_for_ssrf
+        is_valid, error = _validate_url_for_ssrf("http://127.0.0.1/test")
+        self.assertFalse(is_valid)
+        self.assertIn("internal hostname", error.lower())
+
+    def test_ssrf_allows_valid_url(self):
+        """SSRF protection allows valid public URLs."""
+        from core.scraper import _validate_url_for_ssrf
+        is_valid, error = _validate_url_for_ssrf("https://example.com/test")
+        self.assertTrue(is_valid)
+        self.assertEqual(error, "")
+
+
+class TestGenerationResult(unittest.TestCase):
+    """Tests for GenerationResult dataclass."""
+
+    def test_generation_result_structure(self):
+        """GenerationResult has all required fields."""
+        from core.services.generation_service import GenerationResult
+        result = GenerationResult(
+            response="test response",
+            prompt="test prompt",
+            token_usage={"prompt": 10, "completion": 5, "total": 15},
+            context_used_percent=12.5,
+            grounding_score=0.85,
+            latency_ms=150.0
+        )
+        self.assertEqual(result.response, "test response")
+        self.assertEqual(result.grounding_score, 0.85)
+        self.assertEqual(result.latency_ms, 150.0)
+        self.assertEqual(result.unsupported_claims, [])
+
+    def test_generation_result_unsupported_claims_default(self):
+        """GenerationResult defaults unsupported_claims to empty list."""
+        from core.services.generation_service import GenerationResult
+        result = GenerationResult(
+            response="test",
+            prompt="test",
+            token_usage={"prompt": 0, "completion": 0, "total": 0},
+            context_used_percent=0.0,
+            grounding_score=1.0,
+            latency_ms=0.0
+        )
+        self.assertEqual(result.unsupported_claims, [])
+
+
+class TestGroundingWithClaims(unittest.TestCase):
+    """Tests for claim-level grounding verification."""
+
+    def test_verify_grounding_returns_unsupported_claims(self):
+        """verify_grounding returns both score and unsupported claims list."""
+        from core.services.grounding_service import GroundingVerifier
+        verifier = GroundingVerifier()
+        
+        answer = "Paris is the capital of France. The Eiffel Tower is in New York."
+        context_chunks = ["Paris is the capital of France and has the Eiffel Tower."]
+        
+        score, unsupported = verifier.verify_grounding(answer, context_chunks)
+        
+        self.assertIsInstance(score, float)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+        self.assertIsInstance(unsupported, list)
+
+    def test_hallucinated_claim_detected(self):
+        """Hallucinated claims are identified as unsupported."""
+        from core.services.grounding_service import GroundingVerifier
+        verifier = GroundingVerifier()
+        
+        # Use starkly different context and answer
+        answer = "Quantum computers run on solar power."
+        context_chunks = ["Machine learning algorithms process data efficiently."]
+        
+        score, unsupported = verifier.verify_grounding(answer, context_chunks)
+        
+        # Score should be lower for unrelated context, and may have unsupported claims
+        self.assertLess(score, 0.9)
+        self.assertIsInstance(unsupported, list)
+
+
+class TestPipelineConfig(unittest.TestCase):
+    """Tests for PipelineConfig environment overrides."""
+
+    def test_development_mode_disables_features(self):
+        """Development pipeline config disables expensive features."""
+        from core.config import PipelineConfig
+        config = PipelineConfig.development()
+        self.assertFalse(config.enable_hyde)
+        self.assertFalse(config.enable_expansion)
+        self.assertFalse(config.enable_reranking)
+
+    def test_confidence_determines_pipeline(self):
+        """Pipeline decision based on confidence score."""
+        from core.config import PipelineConfig
+        config = PipelineConfig()
+        
+        self.assertTrue(config.should_use_full_pipeline(0.1))
+        self.assertFalse(config.should_use_full_pipeline(0.5))
+        self.assertFalse(config.should_use_full_pipeline(0.9))
 
 
 if __name__ == "__main__":

@@ -1,13 +1,12 @@
 """
-================================================================================
-RAG CONTEXT ENGINE API (FastAPI)
-================================================================================
-This is the primary entry point for the RAG system. It exposes REST endpoints for:
-- Document Upload (.pdf, .txt)
-- Semantic Search & Querying (Dual-mode)
-- System Monitoring (Stats)
-- Conversation History
-- Static File Serving (UI)
+RAG Context Engine API
+
+This is the main entry point for the RAG system. It starts a web server with endpoints for:
+- Uploading documents (PDF and text files)
+- Asking questions (with both regular and streaming responses)
+- Checking system statistics
+- Viewing conversation history
+- Loading the web interface
 """
 
 import os

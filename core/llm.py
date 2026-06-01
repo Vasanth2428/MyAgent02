@@ -1,3 +1,13 @@
+"""
+LLM Service - Talking to the AI Assistant
+
+This module wraps the Groq API client to provide a reliable way to send prompts
+to the language model. It handles:
+- Retrying failed requests (network timeouts, rate limits)
+- Both synchronous and asynchronous communication
+- Smart wrapper classes that add error handling automatically
+"""
+
 import os
 import time
 import random
@@ -11,99 +21,44 @@ from core.config import LLM_MODEL, LLM_TEMPERATURE
 logger = logging.getLogger("RAG.LLM")
 
 
-class RobustLLMClient:
-    def __init__(self, raw_client, llm_service):
-        self.raw_client = raw_client
-        self.llm_service = llm_service
-        self.chat = RobustChat(raw_client.chat, llm_service)
-
-    def __getattr__(self, name):
-        return getattr(self.raw_client, name)
-
-
-class RobustChat:
-    def __init__(self, raw_chat, llm_service):
-        self.raw_chat = raw_chat
-        self.llm_service = llm_service
-        self.completions = RobustCompletions(raw_chat.completions, llm_service)
-
-    def __getattr__(self, name):
-        return getattr(self.raw_chat, name)
-
-
-class RobustCompletions:
-    def __init__(self, raw_completions, llm_service):
-        self.raw_completions = raw_completions
-        self.llm_service = llm_service
-
-    def create(self, *args, **kwargs):
-        return self.llm_service.execute_with_retry(self.raw_completions.create, *args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self.raw_completions, name)
-
-
-class RobustAsyncLLMClient:
-    def __init__(self, raw_client, llm_service):
-        self.raw_client = raw_client
-        self.llm_service = llm_service
-        self.chat = RobustAsyncChat(raw_client.chat, llm_service)
-
-    def __getattr__(self, name):
-        return getattr(self.raw_client, name)
-
-
-class RobustAsyncChat:
-    def __init__(self, raw_chat, llm_service):
-        self.raw_chat = raw_chat
-        self.llm_service = llm_service
-        self.completions = RobustAsyncCompletions(raw_chat.completions, llm_service)
-
-    def __getattr__(self, name):
-        return getattr(self.raw_chat, name)
-
-
-class RobustAsyncCompletions:
-    def __init__(self, raw_completions, llm_service):
-        self.raw_completions = raw_completions
-        self.llm_service = llm_service
-
-    async def create(self, *args, **kwargs):
-        return await self.llm_service.execute_with_retry_async(self.raw_completions.create, *args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self.raw_completions, name)
-
-
 class LLMService:
     """
-    Centralized LLM wrapper. Provides a unified interface for chat completions
-    so that provider changes only need to happen in one place.
-    Exposes both sync (client) and async (async_client) robust endpoints.
+    Centralized connection to the Groq AI language model.
+    
+    This class provides a clean interface for talking to the AI:
+    - Complete: Send a conversation and get a full response back
+    - Complete text: Send a single prompt and get just the response text
+    - Complete async: Same as complete but doesn't block while waiting
+    
+    All methods include automatic retries when the AI service is temporarily
+    unavailable.
     """
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         if not self.api_key:
-            raise ValueError("GROQ_API_KEY environment variable missing")
+            raise ValueError("GROQ_API_KEY environment variable missing - please set your API key")
         self.model = model or LLM_MODEL
         
-        # Sync client
+        # Create both sync and async clients
         raw_sync = Groq(api_key=self.api_key)
         self.client = RobustLLMClient(raw_sync, self)
         
-        # Async client
         raw_async = AsyncGroq(api_key=self.api_key)
         self.async_client = RobustAsyncLLMClient(raw_async, self)
         
-        logger.info(f"LLMService initialized with model: {self.model}")
+        logger.info(f"LLM Service connected to model: {self.model}")
 
     def execute_with_retry(self, func, *args, **kwargs):
         """
-        Executes a client call with exponential backoff and jitter retry logic.
-        Catches RateLimitError, APIConnectionError, InternalServerError, and APITimeoutError.
+        Call the AI with automatic retries for common failures.
+        
+        If the AI service returns rate limit errors, timeouts, or connection issues,
+        we wait and try again instead of failing immediately. This makes the
+        system more reliable when the AI service is busy.
         """
         def is_llm_transient(e):
+            # Retry on temporary API issues
             if isinstance(e, (groq.RateLimitError, groq.APIConnectionError, groq.InternalServerError, groq.APITimeoutError)):
                 return True
             if hasattr(e, "status_code"):

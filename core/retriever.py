@@ -1,12 +1,13 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - RETRIEVER MODULE
-================================================================================
-This module manages the connection to Weaviate Cloud and implements:
-- Vector Indexing (with deterministic UUIDs)
-- Hybrid Search (Vector + BM25 with dynamic alpha)
-- Metadata Filtering
-- Local Embedding Generation (lazy-loaded)
+RAG Retriever - Your Document Search Engine
+
+This module handles searching through your uploaded documents in the Weaviate vector database.
+It can find and store information using two methods:
+- Vector search: Understands the meaning of your question
+- Keyword search: Finds exact words you're looking for
+
+When you upload a document, this module breaks it into pieces and stores each piece
+with a mathematical "fingerprint" that helps find it later when you ask questions.
 """
 
 import os
@@ -34,7 +35,12 @@ _TECHNICAL_KEYWORDS = [
 
 class WeaviateRetriever:
     """
-    Service for interacting with the Weaviate vector database.
+    Connects to the Weaviate vector database to store and search documents.
+    
+    This class handles all the interaction with our document storage system. When you
+    upload a file, it converts the text into mathematical vectors (like a fingerprint)
+    so we can find similar content later. It supports both meaning-based search (vector)
+    and exact keyword search.
     """
 
     def __init__(self):
@@ -90,14 +96,10 @@ class WeaviateRetriever:
             self.collection = self.client.collections.get("RAGKnowledge")
 
         self.alpha = HYBRID_ALPHA_DEFAULT
-        self._embedding_model: Optional["SentenceTransformer"] = None
 
     def _get_embedding_model(self):
-        if self._embedding_model is None:
-            logger.info(f"Lazy-loading embedding model: {EMBEDDING_MODEL}")
-            from sentence_transformers import SentenceTransformer
-            self._embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        return self._embedding_model
+        from core.services.grounding_service import _get_shared_embedding_model
+        return _get_shared_embedding_model()
 
     @property
     def embedding_model(self):
@@ -237,7 +239,7 @@ class WeaviateRetriever:
                 alpha=alpha,
                 limit=top_k,
                 filters=filters,
-                return_properties=["text", "tags", "source", "content_hash", "document_id"],
+                return_properties=["text", "tags", "source"],
                 return_metadata=wvc.query.MetadataQuery(score=True)
             )
 

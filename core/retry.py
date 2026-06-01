@@ -1,3 +1,16 @@
+"""
+Retry Handler - Automatic Retry for Temporary Failures
+
+When we call external services (the AI, the database), they might fail temporarily:
+- Network timeouts
+- Rate limiting (too many requests)
+- Service temporarily unavailable
+
+This module automatically retries those operations with exponential backoff, giving
+them time to recover before giving up. It prevents temporary issues from breaking
+the user experience.
+"""
+
 import time
 import random
 import logging
@@ -7,27 +20,29 @@ from typing import Callable, Any, Optional, Union, Tuple, Type
 
 logger = logging.getLogger("RAG.Retry")
 
+
 def retry(
     retries: int = 5,
     backoff: float = 1.0,
     jitter: Union[bool, float, Tuple[float, float]] = True,
     transient_errors: Optional[Union[Type[BaseException], Tuple[Type[BaseException], ...]]] = None,
     is_transient_fn: Optional[Callable[[BaseException], bool]] = None,
-    logger_name: str = "RAG.Retry"
+    logger_name: str = "RAG.Retry",
 ):
     """
-    Generic retry decorator / wrapper supporting both sync and async functions.
+    Automatically retry operations that fail temporarily.
+    
+    This handles both sync and async functions. When an operation fails, it waits
+    a bit longer before each retry (exponential backoff), with some random jitter
+    to avoid overwhelming the service.
     
     Args:
-        retries: Maximum number of attempts.
-        backoff: Base delay factor in seconds.
-        jitter: Jitter parameter.
-            - If bool: if True, adds random jitter from 0 to 10% of the current delay.
-            - If float: adds random jitter from 0 to jitter.
-            - If tuple (min, max): adds random jitter from min to max.
-        transient_errors: Single exception or tuple of exceptions that are retried by default.
-        is_transient_fn: Optional custom callable to evaluate if an exception is transient.
-        logger_name: Name of the logger to use.
+        retries: How many times to try before giving up
+        backoff: Base wait time in seconds (doubles each retry)
+        jitter: Adds randomness to wait times to prevent thundering herd
+        transient_errors: Which errors should trigger a retry
+        is_transient_fn: Custom function to decide if an error is temporary
+        logger_name: Where to log retry messages
     """
     local_logger = logging.getLogger(logger_name)
     

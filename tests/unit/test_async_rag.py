@@ -100,11 +100,14 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
             return len(text.split())
 
         import unittest.mock
-        with unittest.mock.patch.object(service, '_verify_grounding', return_value=0.85):
-            response, prompt, exact_tokens, ctx_used_pct, grounding = await service.generate_async("query", "context", mock_count, ["context chunk"])
-        self.assertEqual(response, "mocked async response")
-        self.assertTrue(exact_tokens["total"] > 0)
-        self.assertEqual(grounding, 0.85)
+        with unittest.mock.patch.object(service, '_verify_grounding', return_value=(0.85, [])):
+            result = await service.generate_async("query", "context", mock_count, ["context chunk"])
+        self.assertIsInstance(result.response, str)
+        self.assertEqual(result.response, "mocked async response")
+        self.assertTrue(result.token_usage["total"] > 0)
+        self.assertEqual(result.grounding_score, 0.85)
+        self.assertEqual(result.latency_ms, 0.0)
+        self.assertIsInstance(result.unsupported_claims, list)
 
     async def test_async_scraper(self):
         from core.scraper import scrape_web_page_async

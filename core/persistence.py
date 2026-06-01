@@ -1,8 +1,9 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - PERSISTENCE MODULE
-================================================================================
-SQLite-backed storage for conversation history across server restarts.
+RAG Persistence - Saving Conversations to Disk
+
+This module saves your conversation history to a SQLite database, so it persists
+across server restarts. When you come back later, the AI can continue the
+conversation where you left off.
 """
 
 import sqlite3
@@ -18,7 +19,11 @@ logger = logging.getLogger("RAG.Persistence")
 
 class PersistentMemoryStore:
     """
-    Service for SQLite-backed storage of conversation history.
+    Saves conversation history to a SQLite database file.
+    
+    Instead of keeping conversation in memory (which is lost when the server stops),
+    this class writes everything to disk. Your chat history will still be available
+    when you restart the application.
     """
 
     def __init__(self, db_path: str = DB_PATH):

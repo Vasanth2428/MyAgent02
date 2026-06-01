@@ -1,9 +1,10 @@
 """
-================================================================================
-RAG CONTEXT ENGINE - RERANKER MODULE
-================================================================================
-Neural re-ranking via Cross-Encoder for deep semantic relevance scoring.
-Uses lazy singleton initialization to defer model loading until first use.
+RAG Reranker - Finding the Best Documents
+
+When we search for documents, we get a list of candidates. This module re-scores
+them more carefully to find the truly best matches. It uses a specialized AI model
+called a Cross-Encoder that looks at both your question AND each document together
+to give a more accurate relevance score.
 """
 
 import time
@@ -29,47 +30,59 @@ def _get_cross_encoder(model_name: str = RERANKER_MODEL):
 
 class NeuralReranker:
     """
-    Uses a Cross-Encoder model to deeply evaluate the relevance
-    of search candidates against a query.
-    Lazy-loads the model on first use to minimize startup cost.
+    Uses a specialized AI model to re-score search results for better accuracy.
+    
+    After we find documents that match your question, this class looks at each one
+    more carefully to rank them by true relevance. It uses a Cross-Encoder model
+    that understands both your question and each document together.
+    
+    The model is loaded only when first needed (lazy loading) to keep startup fast.
     """
 
     def __init__(self, model_name: str = RERANKER_MODEL):
         self._model_name = model_name
         self._model: Optional["CrossEncoder"] = None
-        logger.info(f"NeuralReranker initialized (lazy load pending)")
+        logger.info(f"NeuralReranker ready (model will load on first use)")
 
     @property
     def model(self):
+        """Get the cross-encoder model, loading it if this is the first time."""
         if self._model is None:
             self._model = _get_cross_encoder(self._model_name)
         return self._model
 
     def rerank(self, query: str, candidates: List[Dict]) -> List[Dict]:
         """
-        Scores query-document pairs and sorts candidates by semantic relevance.
+        Re-score document candidates by how well they match your question.
+        
+        This gives us a more accurate ranking than the initial search, helping the AI
+        focus on the most useful documents.
         """
         if not candidates:
             return []
 
         t_start = time.time()
+        
+        # Create pairs of (query, document) for the model to score
         import math
         pairs = [[query, cand["text"]] for cand in candidates]
         scores = self.model.predict(pairs)
 
+        # Convert raw scores to normalized values (0.0 to 1.0)
         for i, score in enumerate(scores):
             raw_val = float(score)
             normalized = 1 / (1 + math.exp(-raw_val))
             candidates[i]["cross_score"] = normalized
             candidates[i]["raw_score"] = raw_val
 
+        # Sort by the new scores
         sorted_candidates = sorted(candidates, key=lambda x: x["cross_score"], reverse=True)
 
         t_ms = (time.time() - t_start) * 1000
         if sorted_candidates:
             lo = sorted_candidates[-1]["cross_score"]
             hi = sorted_candidates[0]["cross_score"]
-            logger.info(f"Scored {len(candidates)} pairs in {t_ms:.1f}ms. Range: [{lo:.4f}, {hi:.4f}]")
+            logger.info(f"Re-ranked {len(candidates)} documents in {t_ms:.1f}ms. Best score: {hi:.4f}, Worst: {lo:.4f}")
 
         return sorted_candidates
 

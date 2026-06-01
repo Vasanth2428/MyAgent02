@@ -1,7 +1,18 @@
 """
 RAG Context Engine - Core Package
-==================================
-Public API surface for the core pipeline modules.
+
+This package contains the main components of the RAG system. Each module handles
+a specific part of answering questions from your documents:
+
+- RAGContextEngine: The main coordinator that brings everything together
+- WeaviateRetriever: Stores and searches your document database
+- ConversationMemory: Remembers what's been discussed
+- PersistentMemoryStore: Saves chat history to disk
+- Compressor: Shortens documents to fit in the AI's context
+- NeuralReranker: Re-scores search results for better accuracy
+- QueryExpander: Creates alternative search queries
+- HyDEGenerator: Generates hypothetical answers to improve search
+- RecursiveCharacterSplitter: Breaks documents into searchable chunks
 """
 
 from core.engine import RAGContextEngine
