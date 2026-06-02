@@ -8,10 +8,10 @@ def get_env(key: str, default: Optional[str] = None) -> Optional[str]:
     return os.getenv(key, default)
 
 
-SUPERVISOR_MODEL = get_env("SUPERVISOR_MODEL", "gpt-4o-mini")
-REASONING_MODEL = get_env("REASONING_MODEL", "gpt-4o")
+SUPERVISOR_MODEL = get_env("SUPERVISOR_MODEL", "llama-3.1-8b-instant")
+REASONING_MODEL = get_env("REASONING_MODEL", "llama-3.1-8b-instant")
 TAVILY_API_KEY = get_env("TAVILY_API_KEY")
-OPENAI_API_KEY = get_env("OPENAI_API_KEY")
+AGENT_API_KEY = get_env("AGENT_API_KEY")
 
 RECURSION_LIMIT = int(get_env("RECURSION_LIMIT", "20"))
 MAX_STEPS = int(get_env("MAX_STEPS", "10"))

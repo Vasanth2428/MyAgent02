@@ -3,30 +3,38 @@ import os
 import logging
 from typing import Literal
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.Supervisor")
 
-SUPERVISOR_PROMPT = """You are a supervisor routing user queries to specialized workers. Available workers:
-- rag_worker: Answers from private documents only, no external info. Use when the user asks about specific documents, files, or knowledge that should be derived from uploaded content.
-- web_worker: Fetches live web data. Use when the user asks for current events, real-time info, or topics not likely in documents.
-- utility_worker: Handles calculations, dates, formatting, and other deterministic tasks.
+SUPERVISOR_PROMPT = """You are a ROUTING-ONLY supervisor. Your ONLY job is to decide which worker handles the query.
+Do NOT answer the query yourself. Do NOT solve math. Do NOT provide information.
 
-Analyze the conversation history and decide which worker should handle this query. Output only a JSON object with key 'next_agent' and value being one of: 'rag_worker', 'web_worker', 'utility_worker', or 'FINISH'.
-Only finish if the query has been fully answered or if no worker can help.
+Available workers:
+- rag_worker: Use for questions about uploaded documents, files, or private knowledge.
+- web_worker: Use for current events, real-time info, news, or topics requiring live web data.
+- utility_worker: Use for ANY math, calculations, dates, times, formatting, or summarization.
+
+Rules:
+1. Output ONLY a JSON object: {"next_agent": "<worker_name>"}
+2. next_agent MUST be exactly one of: "rag_worker", "web_worker", "utility_worker", or "FINISH"
+3. Use FINISH only if the conversation already contains a complete answer.
+4. When in doubt, route to a worker rather than FINISH.
 
 Examples:
-- User asks "What does my document say about X?" -> rag_worker
-- User asks "What is the weather today?" -> web_worker  
-- User asks "Calculate 2+2" -> utility_worker
-- User asks "Who am I?" after greeting -> FINISH (can't answer without context)
+- User: "What does my document say about X?" -> {"next_agent": "rag_worker"}
+- User: "What is the weather today?" -> {"next_agent": "web_worker"}
+- User: "What is 2+2?" -> {"next_agent": "utility_worker"}
+- User: "What is 2+2?" -> Assistant: "Result: 4" -> {"next_agent": "FINISH"}
+- User: "What is the weather today?" -> Assistant: "The weather today is sunny." -> {"next_agent": "FINISH"}
 """
 
 
 def get_routing_model():
-    """Get the LLM model for routing (uses cheaper model)."""
-    model_name = os.getenv("SUPERVISOR_MODEL", "gpt-4o-mini")
-    return ChatOpenAI(model=model_name, temperature=0)
+    """Get the LLM model for routing (uses cheaper model via Groq)."""
+    model_name = os.getenv("SUPERVISOR_MODEL", "llama-3.1-8b-instant")
+    api_key = os.getenv("AGENT_API_KEY")
+    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
 
 
 def supervisor_node(state: dict) -> dict:
@@ -39,6 +47,10 @@ def supervisor_node(state: dict) -> dict:
     
     messages = state.get("messages", [])
     context_notes = state.get("context_notes", [])
+    steps = state.get("steps_remaining", 10)
+    
+    # Bounded execution loop: decrement steps
+    new_steps = steps - 1
     
     routing_prompt = []
     routing_prompt.append(SystemMessage(content=SUPERVISOR_PROMPT))
@@ -64,7 +76,7 @@ def supervisor_node(state: dict) -> dict:
         json_match = re.search(r'\{.*\}', content)
         if json_match:
             result = json.loads(json_match.group(0))
-            next_agent = result.get("next_agent", "FINISH")
+            next_agent = result.get("next_agent") or "FINISH"
         else:
             next_agent = "FINISH"
     except Exception as e:
@@ -75,4 +87,23 @@ def supervisor_node(state: dict) -> dict:
     if next_agent not in valid_workers:
         next_agent = "FINISH"
     
-    return {"next_agent": next_agent}
+    state_update = {
+        "next_agent": next_agent,
+        "steps_remaining": new_steps
+    }
+    
+    # If finishing, populate final_answer from the last assistant message
+    if next_agent == "FINISH":
+        last_answer = ""
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage):
+                last_answer = msg.content
+                break
+            elif isinstance(msg, dict) and msg.get("role") == "assistant":
+                last_answer = msg.get("content", "")
+                break
+        if last_answer:
+            state_update["final_answer"] = last_answer
+            
+    print(f"\n[SUPERVISOR] Routing decision: next_agent = '{next_agent}' | Steps remaining: {new_steps}")
+    return state_update

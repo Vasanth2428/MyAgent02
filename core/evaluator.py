@@ -14,6 +14,7 @@ Run these evaluations after changes to make sure nothing got worse.
 
 import logging
 import time
+import re
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field
 from functools import lru_cache

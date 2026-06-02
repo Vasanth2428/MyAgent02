@@ -100,8 +100,9 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
             return len(text.split())
 
         import unittest.mock
-        with unittest.mock.patch.object(service, '_verify_grounding', return_value=(0.85, [])):
-            result = await service.generate_async("query", "context", mock_count, ["context chunk"])
+        with unittest.mock.patch('time.time', return_value=123.45):
+            with unittest.mock.patch.object(service, '_verify_grounding', return_value=(0.85, [])):
+                result = await service.generate_async("query", "context", mock_count, ["context chunk"])
         self.assertIsInstance(result.response, str)
         self.assertEqual(result.response, "mocked async response")
         self.assertTrue(result.token_usage["total"] > 0)

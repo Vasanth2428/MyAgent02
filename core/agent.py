@@ -204,6 +204,7 @@ class RAGAgent:
         
         async for event in self.graph.compiled_graph.astream(initial_state):
             for node_name, state_delta in event.items():
+                yield {"event": "node_start", "node": node_name}
                 if "events_queue" in state_delta and state_delta["events_queue"]:
                     for ev in state_delta["events_queue"]:
                         yield ev

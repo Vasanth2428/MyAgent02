@@ -14,6 +14,70 @@ logger = logging.getLogger("RAG.LLM")
 from core.retry import retry
 
 
+class RobustLLMClient:
+    def __init__(self, raw_client, llm_service):
+        self.raw_client = raw_client
+        self.llm_service = llm_service
+        self.chat = RobustChat(raw_client.chat, llm_service)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_client, name)
+
+
+class RobustChat:
+    def __init__(self, raw_chat, llm_service):
+        self.raw_chat = raw_chat
+        self.llm_service = llm_service
+        self.completions = RobustCompletions(raw_chat.completions, llm_service)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_chat, name)
+
+
+class RobustCompletions:
+    def __init__(self, raw_completions, llm_service):
+        self.raw_completions = raw_completions
+        self.llm_service = llm_service
+
+    def create(self, *args, **kwargs):
+        return self.llm_service.execute_with_retry(self.raw_completions.create, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_completions, name)
+
+
+class RobustAsyncLLMClient:
+    def __init__(self, raw_client, llm_service):
+        self.raw_client = raw_client
+        self.llm_service = llm_service
+        self.chat = RobustAsyncChat(raw_client.chat, llm_service)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_client, name)
+
+
+class RobustAsyncChat:
+    def __init__(self, raw_chat, llm_service):
+        self.raw_chat = raw_chat
+        self.llm_service = llm_service
+        self.completions = RobustAsyncCompletions(raw_chat.completions, llm_service)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_chat, name)
+
+
+class RobustAsyncCompletions:
+    def __init__(self, raw_completions, llm_service):
+        self.raw_completions = raw_completions
+        self.llm_service = llm_service
+
+    async def create(self, *args, **kwargs):
+        return await self.llm_service.execute_with_retry_async(self.raw_completions.create, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.raw_completions, name)
+
+
 class LLMService:
     """Centralized connection to the Groq AI language model."""
 
@@ -25,6 +89,9 @@ class LLMService:
 
         self._raw_sync = Groq(api_key=self.api_key)
         self._raw_async = AsyncGroq(api_key=self.api_key)
+
+        self.client = RobustLLMClient(self._raw_sync, self)
+        self.async_client = RobustAsyncLLMClient(self._raw_async, self)
 
         logger.info(f"LLM Service connected to model: {self.model}")
 
@@ -80,7 +147,7 @@ class LLMService:
         if response_format is not None:
             kwargs["response_format"] = response_format
 
-        return self._raw_sync.chat.completions.create(**kwargs)
+        return self.client.chat.completions.create(**kwargs)
 
     async def complete_async(
         self,
@@ -100,7 +167,7 @@ class LLMService:
         if response_format is not None:
             kwargs["response_format"] = response_format
 
-        return await self._raw_async.chat.completions.create(**kwargs)
+        return await self.async_client.chat.completions.create(**kwargs)
 
     def complete_text(
         self,
@@ -136,8 +203,4 @@ class LLMService:
 
     @property
     def raw_client(self):
-        return self._raw_sync
-
-    @property
-    def client(self):
-        return self._raw_sync
+        return self.client

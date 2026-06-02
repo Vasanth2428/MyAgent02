@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 from core.agent import RAGAgent
 
 
@@ -99,8 +99,8 @@ class TestRAGAgent(unittest.TestCase):
 
     def test_react_loop_search_knowledge_cache(self):
         """Tests that duplicate searches hit the local query cache."""
-        self.engine._phase_expand.return_value = ["test query"]
-        self.engine._phase_retrieve.return_value = [{"text": "document secret", "score": 0.9, "source": "docs"}]
+        self.engine._phase_expand_async = AsyncMock(return_value=["test query"])
+        self.engine._phase_retrieve_async = AsyncMock(return_value=[{"text": "document secret", "score": 0.9, "source": "docs"}])
         self.engine.compressor.compress.return_value = "compressed secret"
         
         # ReAct reasoning steps are synchronous
@@ -113,13 +113,13 @@ class TestRAGAgent(unittest.TestCase):
         events = list(self.agent.run_stream("what is the secret password", session_id="test_sess"))
         
         # Verify search was only executed once (check engine retrieval calls)
-        self.assertEqual(self.engine._phase_retrieve.call_count, 1)
+        self.assertEqual(self.engine._phase_retrieve_async.call_count, 1)
 
     def test_react_loop_exhaustion_fallback(self):
         """Tests that the agent falls back to final synthesis when loop iterations are exhausted."""
         self.engine.retriever.get_count.return_value = 50
-        self.engine._phase_expand.return_value = ["query"]
-        self.engine._phase_retrieve.return_value = [{"text": "doc content", "score": 0.8, "source": "docs"}]
+        self.engine._phase_expand_async = AsyncMock(return_value=["query"])
+        self.engine._phase_retrieve_async = AsyncMock(return_value=[{"text": "doc content", "score": 0.8, "source": "docs"}])
         self.engine.compressor.compress.return_value = "compressed doc content"
 
         # ReAct reasoning steps are synchronous, synthesis call is streaming (stream=True)

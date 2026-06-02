@@ -160,7 +160,19 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
-// ---- Keyboard Shortcut (Ctrl+Enter) ----
+// ---- Keyboard Shortcut (Enter to submit, Shift+Enter for newline) ----
+if (input) {
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            if (!AppState.isGenerating && input.value.trim()) {
+                form.dispatchEvent(new Event('submit', { cancelable: true }));
+            }
+        }
+    });
+}
+
+// ---- Keyboard Shortcut (Ctrl+Enter globally) ----
 document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -184,41 +196,69 @@ function addMsg(text, type = 'ai', telemetryData = null) {
         }
     }
     
+    // Parse telemetryData if it's a string
+    if (type === 'ai' && typeof telemetryData === 'string') {
+        try { telemetryData = JSON.parse(telemetryData); } catch (e) { telemetryData = null; }
+    }
+    
+    // Build thinking accordion if agent steps are in telemetry history
+    let thinkingHtml = '';
+    if (type === 'ai' && telemetryData && telemetryData.debug_info && telemetryData.debug_info.actions_taken && telemetryData.debug_info.actions_taken.length > 0) {
+        const actions = telemetryData.debug_info.actions_taken;
+        let stepsLinesHtml = '';
+        actions.forEach(act => {
+            if (act.thought) {
+                stepsLinesHtml += `<div class="step-thought-log">🧠 Thought: ${escapeHtml(act.thought)}</div>`;
+            }
+            if (act.tool) {
+                stepsLinesHtml += `<div class="step-action-log">🔧 Action: Call ${escapeHtml(act.tool)} with argument "${escapeHtml(act.input)}"</div>`;
+            }
+            if (act.observation) {
+                stepsLinesHtml += `<div class="step-obs-log">🔍 Observation: ${escapeHtml(act.observation.substring(0, 150))}...</div>`;
+            }
+        });
+        
+        thinkingHtml = `
+            <details class="thinking-accordion">
+                <summary class="thinking-summary">
+                    <span style="color: var(--accent-emerald); font-weight: bold; font-size: 0.8rem; margin-right: 0.2rem;">✓</span>
+                    <span class="thinking-status">Thought process completed</span>
+                </summary>
+                <div class="thinking-details">
+                    ${stepsLinesHtml}
+                </div>
+            </details>
+        `;
+    }
+    
     // Build main content
-    let contentHtml = `<div class="msg-header">${type === 'user' ? 'USER_INPUT' : 'SYSTEM_OUTPUT'}</div><div class="msg-body">${formattedText}</div>`;
+    let contentHtml = `<div class="msg-header">${type === 'user' ? 'USER_INPUT' : 'SYSTEM_OUTPUT'}</div>${thinkingHtml}<div class="msg-body">${formattedText}</div>`;
     
     // If AI Turn has telemetry, append footnote badge
     if (type === 'ai' && telemetryData) {
-        // Parse if string (from SQLite history)
-        if (typeof telemetryData === 'string') {
-            try { telemetryData = JSON.parse(telemetryData); } catch (e) { telemetryData = null; }
+        const hasOverflow = telemetryData.overflow_occurred === true;
+        const initTkn = telemetryData.initial_tokens || 'N/A';
+        const finalTkn = telemetryData.final_tokens || 'N/A';
+        const limitVal = telemetryData.limit || 'N/A';
+        
+        if (hasOverflow) {
+            msg.classList.add('msg-overflow-recovered');
         }
         
-        if (telemetryData) {
-            const hasOverflow = telemetryData.overflow_occurred === true;
-            const initTkn = telemetryData.initial_tokens || 'N/A';
-            const finalTkn = telemetryData.final_tokens || 'N/A';
-            const limitVal = telemetryData.limit || 'N/A';
-            
-            if (hasOverflow) {
-                msg.classList.add('msg-overflow-recovered');
-            }
-            
-            contentHtml += `
-                <div class="msg-telemetry">
-                    <div class="telemetry-badges">
-                        <span class="badge-item ${hasOverflow ? 'recovered' : 'nominal'}">
-                            ${hasOverflow ? 'RECOVERED' : 'NOMINAL'}
-                        </span>
-                        <span class="badge-item">LIMIT: ${limitVal} TKN</span>
-                        <span class="badge-item">FOOTPRINT: ${finalTkn} TKN</span>
-                    </div>
-                    <button type="button" class="telemetry-inspect-btn">
-                        INSPECT
-                    </button>
+        contentHtml += `
+            <div class="msg-telemetry">
+                <div class="telemetry-badges">
+                    <span class="badge-item ${hasOverflow ? 'recovered' : 'nominal'}">
+                        ${hasOverflow ? 'RECOVERED' : 'NOMINAL'}
+                    </span>
+                    <span class="badge-item">LIMIT: ${limitVal} TKN</span>
+                    <span class="badge-item">FOOTPRINT: ${finalTkn} TKN</span>
                 </div>
-            `;
-        }
+                <button type="button" class="telemetry-inspect-btn">
+                    INSPECT
+                </button>
+            </div>
+        `;
     }
     
     msg.innerHTML = contentHtml;
@@ -252,39 +292,42 @@ function renderInspector(data) {
     const budget  = data.stats?.budget_tracking || {};
     const latency = data.stats?.instantaneous_latency_ms || {};
 
+    // Retrieve the traces we built in real-time
+    const stepsListContainer = document.getElementById('agent-steps-list');
+    let stepsHtml = '';
+    if (stepsListContainer) {
+        // Ensure all are marked complete now
+        const activeSteps = stepsListContainer.querySelectorAll('.agent-step-card.active');
+        activeSteps.forEach(card => {
+            card.classList.remove('active');
+            card.classList.add('completed');
+            const statusBadge = card.querySelector('.step-status-badge');
+            if (statusBadge) {
+                statusBadge.textContent = 'COMPLETED';
+                statusBadge.className = 'step-status-badge status-completed';
+            }
+        });
+        stepsHtml = stepsListContainer.innerHTML;
+    } else {
+        stepsHtml = '<div style="color: var(--text-muted); font-style: italic;">No execution trace available.</div>';
+    }
+
     let debugSection = '';
     if (data.stats?.debug_info) {
         const dbg = data.stats.debug_info;
         const goalsHtml = dbg.goals_set.length > 0 
             ? dbg.goals_set.map((g, i) => `<div class="agent-goal-item">${i+1}. ${escapeHtml(g)}</div>`).join('')
             : '<div style="color: var(--accent-amber); margin-left: 8px;">No goals recorded</div>';
-        const actionsHtml = dbg.actions_taken.length > 0
-            ? dbg.actions_taken.map((a, i) => `
-                <div class="agent-action-card">
-                    <div class="agent-action-header">
-                        <span class="agent-action-label">STEP ${a.step || i+1}: TOOL: ${escapeHtml(a.tool)}</span>
-                    </div>
-                    <div class="agent-action-content">
-                        <div class="agent-action-field">
-                            <div class="agent-action-field-title">INPUT</div>
-                            <div class="agent-action-field-value">${escapeHtml(a.input || 'N/A').substring(0, 400)}${(a.input && a.input.length > 400) ? '...' : ''}</div>
-                        </div>
-                        <div class="agent-action-field">
-                            <div class="agent-action-field-title">OUTPUT</div>
-                            <div class="agent-action-field-value">${escapeHtml(a.observation || 'N/A').substring(0, 1000)}${(a.observation && a.observation.length > 1000) ? '...' : ''}</div>
-                        </div>
-                    </div>
-                </div>`).join('')
-            : '<div style="color: var(--accent-amber); margin-left: 8px;">No actions taken</div>';
+        
         debugSection = `
         <div class="inspector-section">
-            <div class="inspector-section-hdr">AGENTIC DEBUG INFO</div>
-            <div class="inspector-section-body" style="font-family: var(--font-mono); font-size: 0.7rem;">
+            <div class="inspector-section-hdr">AGENTIC EXECUTION TRACE</div>
+            <div class="inspector-section-body" style="font-family: var(--font-mono); font-size: 0.7rem; display: flex; flex-direction: column; gap: 8px;">
                 <div style="margin-bottom: 6px;">LLM CALLS: ${dbg.llm_calls}</div>
                 <div style="margin-bottom: 6px;">GOALS SET:</div>
                 ${goalsHtml}
-                <div style="margin-top: 6px; margin-bottom: 4px;">ACTIONS TAKEN:</div>
-                ${actionsHtml}
+                <div style="margin-top: 6px; margin-bottom: 4px;">PROCESS DETAILS:</div>
+                <div class="agent-step-list-final" style="display: flex; flex-direction: column; gap: 8px;">${stepsHtml}</div>
             </div>
         </div>`;
     }
@@ -326,6 +369,90 @@ HYDE GENERATION: ${latency.phase_1_5_hyde_ms || 0} ms
     `;
 }
 
+// ---- Real-Time Agentic Loop Processing Monitor ----
+function addOrUpdateStep(stepType, name, detail = '') {
+    const listContainer = document.getElementById('agent-steps-list');
+    if (!listContainer) return;
+    
+    // Clear empty message
+    const emptyMsg = listContainer.querySelector('.empty-steps-msg');
+    if (emptyMsg) emptyMsg.remove();
+    
+    if (stepType === 'node') {
+        // Mark any previous active step as completed
+        const activeSteps = listContainer.querySelectorAll('.agent-step-card.active');
+        activeSteps.forEach(card => {
+            card.classList.remove('active');
+            card.classList.add('completed');
+            const statusBadge = card.querySelector('.step-status-badge');
+            if (statusBadge) {
+                statusBadge.textContent = 'COMPLETED';
+                statusBadge.className = 'step-status-badge status-completed';
+            }
+        });
+        
+        const friendlyNames = {
+            'early_exit_check': 'Early Exit Validation',
+            'early_exit_execute': 'Fast Path Response',
+            'overflow_recovery': 'Context Overflow Safeguard',
+            'reasoning': 'ReAct Agent Reasoning',
+            'execute_formatting_error': 'Format Correction Handler',
+            'execute_tool': 'Tool Execution Core',
+            'synthesis': 'Final Answer Synthesis',
+            'streaming_final_answer': 'Streaming Assistant Output',
+            // Non-agentic pipeline states for fallback
+            'WAITING_FOR_REASONING': 'LLM Inference Reasoning',
+            'WAITING_FOR_ACTION': 'Pipeline Gating & Routing',
+            'EXECUTING_TOOL': 'Information Extraction & Search',
+            'WAITING_FOR_FINAL_ANSWER': 'Compiling Context Data',
+            'STREAMING_FINAL_RESPONSE': 'Generating Final Response Stream'
+        };
+        const displayName = friendlyNames[name] || name;
+        
+        const card = document.createElement('div');
+        card.className = 'agent-step-card active';
+        card.id = `step-node-${name}-${Date.now()}`; // unique id to prevent clash
+        card.innerHTML = `
+            <div class="step-header">
+                <span class="step-icon-dot"></span>
+                <span class="step-name">${escapeHtml(displayName)}</span>
+                <span class="step-status-badge status-active">ACTIVE</span>
+            </div>
+            <div class="step-details" style="display: none;"></div>
+        `;
+        listContainer.appendChild(card);
+        listContainer.scrollTop = listContainer.scrollHeight;
+    } else {
+        // Find the last step (current active one)
+        const lastCard = listContainer.lastElementChild;
+        if (lastCard && lastCard.classList.contains('agent-step-card')) {
+            const detailsDiv = lastCard.querySelector('.step-details');
+            if (detailsDiv) {
+                detailsDiv.style.display = 'block';
+                const logDiv = document.createElement('div');
+                if (stepType === 'thought') {
+                    logDiv.className = 'step-thought-log';
+                    logDiv.innerHTML = `<span class="step-detail-label">THOUGHT:</span> ${escapeHtml(detail)}`;
+                } else if (stepType === 'action') {
+                    logDiv.className = 'step-action-log';
+                    logDiv.innerHTML = `<span class="step-detail-label">ACTION:</span> Executing <strong>${escapeHtml(name)}</strong> with: <code>${escapeHtml(detail)}</code>`;
+                } else if (stepType === 'observation') {
+                    logDiv.className = 'step-obs-log';
+                    logDiv.innerHTML = `<span class="step-detail-label">OBSERVATION:</span> ${escapeHtml(detail.substring(0, 150))}${detail.length > 150 ? '...' : ''}`;
+                }
+                detailsDiv.appendChild(logDiv);
+            }
+        } else {
+            // Fallback: If no step card exists (e.g. initial phases), add a simple log line
+            const line = document.createElement('div');
+            line.className = 'step-simple-log';
+            line.innerHTML = `&gt; ${escapeHtml(detail || name)}`;
+            listContainer.appendChild(line);
+        }
+        listContainer.scrollTop = listContainer.scrollHeight;
+    }
+}
+
 // ---- SSE Streaming Controller ----
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -333,6 +460,7 @@ form.addEventListener('submit', async (e) => {
     if (!query) return;
 
     input.value = '';
+    input.style.height = 'auto'; // Reset textarea height on submit
     addMsg(query, 'user');
     
     const mode = document.querySelector('input[name="engine-mode"]:checked').value;
@@ -342,13 +470,26 @@ form.addEventListener('submit', async (e) => {
 
     // Reset/Clear UI state for query run
     reconWindow.innerHTML = '';
-    inspectorWindow.innerHTML = '<div class="inspector-placeholder">Awaiting telemetry stream...</div>';
+    inspectorWindow.innerHTML = `
+        <div class="inspector-section">
+            <div class="inspector-section-hdr">PROCESSING MONITOR (REAL TIME)</div>
+            <div class="inspector-section-body" style="font-family: var(--font-mono); font-size: 0.7rem;">
+                <div class="agent-step-list" id="agent-steps-list" style="max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                    <div class="empty-steps-msg" style="color: var(--text-muted); font-style: italic;">Awaiting pipeline initiation...</div>
+                </div>
+            </div>
+        </div>
+    `;
     
     // Clear and reset context overflow debugger
     overflowLogWindow.innerHTML = '';
     overflowIndicatorDot.className = 'indicator-dot nominal';
     overflowAlertBanner.className = 'overflow-banner alert-nominal';
     overflowAlertBanner.textContent = 'SYSTEM RUNNING IN NOMINAL STATE';
+
+    let inlineThinkingAccordion = null;
+    let inlineThinkingDetails = null;
+    let thinkingStart = null;
 
     const controller = new AbortController();
     AppState.setGenerating(true, controller);
@@ -409,18 +550,63 @@ form.addEventListener('submit', async (e) => {
                     continue;
                 }
 
-                if (data.event === "thought") {
-                     addLog(data.text, "THOUGHT");
-                 } 
-                 else if (data.event === "action") {
-                     addLog(`Executing tool: ${data.tool}[${data.input}]`, "ACTION");
-                 }
-                 else if (data.event === "observation") {
-                     addLog(`Received tool observation (${data.output.length} chars)`, "OBSERVATION");
-                 }
-                 else if (data.event === "state_change") {
-                     addLog(`State: ${data.state}`, "SYSTEM");
-                 }
+                const ensureAccordion = () => {
+                    if (!inlineThinkingAccordion) {
+                        thinkingStart = Date.now();
+                        inlineThinkingAccordion = document.createElement('details');
+                        inlineThinkingAccordion.className = 'thinking-accordion';
+                        inlineThinkingAccordion.setAttribute('open', '');
+                        inlineThinkingAccordion.innerHTML = `
+                            <summary class="thinking-summary">
+                                <span class="thinking-spinner"></span>
+                                <span class="thinking-status">Thinking...</span>
+                            </summary>
+                            <div class="thinking-details"></div>
+                        `;
+                        bodyContainer.parentNode.insertBefore(inlineThinkingAccordion, bodyContainer);
+                        inlineThinkingDetails = inlineThinkingAccordion.querySelector('.thinking-details');
+                    }
+                };
+
+                if (data.event === "node_start") {
+                    addOrUpdateStep("node", data.node);
+                }
+                else if (data.event === "thought") {
+                    addLog(data.text, "THOUGHT");
+                    addOrUpdateStep("thought", "", data.text);
+                    ensureAccordion();
+                    const line = document.createElement('div');
+                    line.className = 'step-thought-log';
+                    line.innerHTML = `🧠 Thought: ${escapeHtml(data.text)}`;
+                    inlineThinkingDetails.appendChild(line);
+                    inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
+                } 
+                else if (data.event === "action") {
+                    addLog(`Executing tool: ${data.tool}[${data.input}]`, "ACTION");
+                    addOrUpdateStep("action", data.tool, data.input);
+                    ensureAccordion();
+                    const line = document.createElement('div');
+                    line.className = 'step-action-log';
+                    line.innerHTML = `🔧 Action: Call ${escapeHtml(data.tool)} with argument "${escapeHtml(data.input)}"`;
+                    inlineThinkingDetails.appendChild(line);
+                    inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
+                }
+                else if (data.event === "observation") {
+                    addLog(`Received tool observation (${data.output.length} chars)`, "OBSERVATION");
+                    addOrUpdateStep("observation", "", data.output);
+                    ensureAccordion();
+                    const line = document.createElement('div');
+                    line.className = 'step-obs-log';
+                    line.innerHTML = `🔍 Observation: ${escapeHtml(data.output.substring(0, 150))}${data.output.length > 150 ? '...' : ''}`;
+                    inlineThinkingDetails.appendChild(line);
+                    inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
+                }
+                else if (data.event === "state_change") {
+                    addLog(`State: ${data.state}`, "SYSTEM");
+                    if (mode !== "agentic") {
+                        addOrUpdateStep("node", data.state);
+                    }
+                }
                  else if (data.event === "overflow_detected") {
                      // Trigger visual warning alerts
                      overflowIndicatorDot.className = 'indicator-dot breached';
@@ -456,6 +642,23 @@ form.addEventListener('submit', async (e) => {
                      overflowLogWindow.scrollTop = overflowLogWindow.scrollHeight;
                  }
                  else if (data.event === "answer_chunk") {
+                     if (inlineThinkingAccordion) {
+                         const elapsed = ((Date.now() - thinkingStart) / 1000).toFixed(1);
+                         const statusSpan = inlineThinkingAccordion.querySelector('.thinking-status');
+                         const spinner = inlineThinkingAccordion.querySelector('.thinking-spinner');
+                         if (statusSpan) statusSpan.textContent = `Thought process completed (${elapsed}s)`;
+                         if (spinner) {
+                             spinner.className = '';
+                             spinner.textContent = '✓';
+                             spinner.style.color = 'var(--accent-emerald)';
+                             spinner.style.fontWeight = 'bold';
+                             spinner.style.fontSize = '0.8rem';
+                             spinner.style.marginRight = '0.2rem';
+                         }
+                         inlineThinkingAccordion.removeAttribute('open');
+                         inlineThinkingAccordion = null;
+                         inlineThinkingDetails = null;
+                     }
                      accumulatedText += data.text;
                      try {
                          bodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(accumulatedText) : accumulatedText;
@@ -561,6 +764,18 @@ form.addEventListener('submit', async (e) => {
             }
         }
     } catch (err) {
+        if (inlineThinkingAccordion) {
+            const spinner = inlineThinkingAccordion.querySelector('.thinking-spinner');
+            const statusSpan = inlineThinkingAccordion.querySelector('.thinking-status');
+            if (spinner) {
+                spinner.className = '';
+                spinner.textContent = '✗';
+                spinner.style.color = 'var(--accent-rose)';
+            }
+            if (statusSpan) statusSpan.textContent = 'Thought process failed/interrupted';
+            inlineThinkingAccordion.removeAttribute('open');
+            inlineThinkingAccordion = null;
+        }
         if (err.name !== 'AbortError') {
             addLog(`Pipeline generation failure: ${err.message}`, "ERROR");
             bodyContainer.innerHTML = `<span style="color: var(--accent-red); font-weight: bold;">CRITICAL ERROR:</span> ${err.message}`;
@@ -792,11 +1007,21 @@ const hudToggleBtn = document.getElementById('hud-toggle-btn');
 const mainGrid = document.querySelector('.main-grid');
 
 if (hudToggleBtn && mainGrid) {
+    // Helper to update button label text without losing the SVG icon
+    const updateButtonLabel = (visibleOrCollapsed, textVal) => {
+        const label = hudToggleBtn.querySelector('span');
+        if (label) {
+            label.textContent = textVal;
+        } else {
+            hudToggleBtn.innerHTML = `<span>${textVal}</span>`;
+        }
+    };
+
     // Determine initial state based on window width
     let isCollapsed = window.innerWidth <= 1200;
     if (isCollapsed) {
         mainGrid.classList.add('hud-collapsed');
-        hudToggleBtn.innerHTML = `<span>SHOW HUD</span>`;
+        updateButtonLabel(true, 'Show HUD');
         hudToggleBtn.classList.add('hud-hidden-state');
     }
 
@@ -807,14 +1032,14 @@ if (hudToggleBtn && mainGrid) {
             mainGrid.classList.toggle('hud-visible');
             const isVisible = mainGrid.classList.contains('hud-visible');
             hudToggleBtn.classList.toggle('hud-hidden-state', !isVisible);
-            hudToggleBtn.innerHTML = isVisible ? `<span>HIDE HUD</span>` : `<span>SHOW HUD</span>`;
+            updateButtonLabel(isVisible, isVisible ? 'Hide HUD' : 'Show HUD');
             addLog(isVisible ? "System HUD visible in responsive overlay." : "System HUD hidden in responsive overlay.", "SYSTEM");
         } else {
             // On large viewports, toggle hud-collapsed class
             mainGrid.classList.toggle('hud-collapsed');
             const collapsed = mainGrid.classList.contains('hud-collapsed');
             hudToggleBtn.classList.toggle('hud-hidden-state', collapsed);
-            hudToggleBtn.innerHTML = collapsed ? `<span>SHOW HUD</span>` : `<span>COLLAPSE HUD</span>`;
+            updateButtonLabel(collapsed, collapsed ? 'Show HUD' : 'Collapse HUD');
             addLog(collapsed ? "System HUD collapsed." : "System HUD expanded.", "SYSTEM");
         }
     });
@@ -825,11 +1050,11 @@ if (hudToggleBtn && mainGrid) {
         if (width > 1200) {
             mainGrid.classList.remove('hud-visible');
             const collapsed = mainGrid.classList.contains('hud-collapsed');
-            hudToggleBtn.innerHTML = collapsed ? `<span>SHOW HUD</span>` : `<span>COLLAPSE HUD</span>`;
+            updateButtonLabel(collapsed, collapsed ? 'Show HUD' : 'Collapse HUD');
             hudToggleBtn.classList.toggle('hud-hidden-state', collapsed);
         } else {
             const isVisible = mainGrid.classList.contains('hud-visible');
-            hudToggleBtn.innerHTML = isVisible ? `<span>HIDE HUD</span>` : `<span>SHOW HUD</span>`;
+            updateButtonLabel(isVisible, isVisible ? 'Hide HUD' : 'Show HUD');
             hudToggleBtn.classList.toggle('hud-hidden-state', !isVisible);
         }
     });
@@ -887,3 +1112,49 @@ if (dropArea) {
         }
     });
 }
+
+// ---- Tab Switching Event Listeners (Developer Console) ----
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tabId = btn.dataset.tab;
+        const parent = btn.closest('.dev-tabs');
+        if (!parent) return;
+
+        parent.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        parent.querySelectorAll('.tab-content-panel').forEach(p => p.classList.remove('active'));
+
+        btn.classList.add('active');
+        const targetPanel = document.getElementById(tabId);
+        if (targetPanel) {
+            targetPanel.classList.add('active');
+            // Auto-scroll any log containers inside to bottom when tab becomes visible
+            targetPanel.querySelectorAll('.log-container').forEach(el => {
+                el.scrollTop = el.scrollHeight;
+            });
+        }
+    });
+});
+
+// ---- Textarea Auto-Resizer ----
+if (input) {
+    input.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = (this.scrollHeight) + 'px';
+    });
+}
+
+// ---- Mobile Right Drawer Auto-Close ----
+if (chatWindow && mainGrid) {
+    chatWindow.addEventListener('click', () => {
+        if (window.innerWidth <= 1200 && mainGrid.classList.contains('hud-visible')) {
+            mainGrid.classList.remove('hud-visible');
+            const hudToggleBtn = document.getElementById('hud-toggle-btn');
+            if (hudToggleBtn) {
+                hudToggleBtn.classList.add('hud-hidden-state');
+                const label = hudToggleBtn.querySelector('span');
+                if (label) label.textContent = 'Show HUD';
+            }
+        }
+    });
+}
+

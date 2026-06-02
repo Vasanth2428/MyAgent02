@@ -3,7 +3,7 @@ import os
 import logging
 from typing import List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.WebWorker")
 
@@ -14,9 +14,10 @@ Structure responses with headers, bullet points, and clear formatting.
 
 
 def get_reasoning_model():
-    """Get the LLM model for complex reasoning."""
-    model_name = os.getenv("REASONING_MODEL", "gpt-4o")
-    return ChatOpenAI(model=model_name, temperature=0)
+    """Get the LLM model for complex reasoning via Groq."""
+    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
+    api_key = os.getenv("AGENT_API_KEY")
+    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
 
 
 def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
@@ -48,15 +49,18 @@ def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
         return {"final_answer": "No query provided.", "next_agent": "FINISH"}
     
     try:
+        print(f"\n[WEB WORKER] Executing web search for: '{last_user_query}'")
         results = web_search_tool(last_user_query)
         results = truncate_results(results)
         
         if not results:
+            print("[WEB WORKER] No relevant web search results found.")
             return {
                 "messages": [AIMessage(content="I couldn't find any relevant web results for your query.")],
                 "next_agent": "FINISH"
             }
         
+        print(f"[WEB WORKER] Found {len(results)} search results. Synthesizing answer...")
         context = "\n\n".join([f"- {validate_tool_output(r.get('title', ''))}: {validate_tool_output(r.get('content', ''))}" for r in results])
         sources = ", ".join([r.get('url', '') for r in results if r.get('url')])
         
@@ -67,6 +71,7 @@ def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
         ])
         
         safe_response = validate_tool_output(response.content)
+        print(f"[WEB WORKER] Response:\n{safe_response}")
         
         return {
             "messages": [AIMessage(content=safe_response)],

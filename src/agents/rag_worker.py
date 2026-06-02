@@ -3,7 +3,7 @@ import os
 import logging
 from typing import List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.RAGWorker")
 
@@ -17,9 +17,10 @@ Never invent information. Use only what you find in the document search results.
 
 
 def get_reasoning_model():
-    """Get the LLM model for complex reasoning."""
-    model_name = os.getenv("REASONING_MODEL", "gpt-4o")
-    return ChatOpenAI(model=model_name, temperature=0)
+    """Get the LLM model for complex reasoning via Groq."""
+    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
+    api_key = os.getenv("AGENT_API_KEY")
+    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
 
 
 def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
@@ -54,15 +55,18 @@ def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
         return {"final_answer": "No query provided.", "next_agent": "FINISH"}
     
     try:
+        print(f"\n[RAG WORKER] Querying database for: '{last_user_query}'")
         results = document_tool(last_user_query)
         results = truncate_results(results)
         
         if not results:
+            print("[RAG WORKER] No documents found in database.")
             return {
                 "messages": [AIMessage(content="I don't know based on the provided documents.")],
                 "next_agent": "FINISH"
             }
         
+        print(f"[RAG WORKER] Retrieved {len(results)} document segments. Generating final answer...")
         context = "\n\n".join([f"Document {i+1}:\n{validate_tool_output(r.get('text', ''))}" for i, r in enumerate(results)])
         
         model = get_reasoning_model()
@@ -72,6 +76,7 @@ def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
         ])
         
         safe_response = validate_tool_output(response.content)
+        print(f"[RAG WORKER] Response:\n{safe_response}")
         
         return {
             "messages": [AIMessage(content=safe_response)],

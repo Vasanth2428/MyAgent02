@@ -641,6 +641,7 @@ class RAGLangGraph:
         
         actions_taken.append({
             "step": iteration,
+            "thought": thought_text,
             "tool": tool_name,
             "input": tool_arg,
             "observation": sanitized_observation[:1000]
@@ -697,7 +698,12 @@ class RAGLangGraph:
                 "document_tokens_used": 0,
                 "document_tokens_limit": 0
             },
-            "compression_ratio": 1.0
+            "compression_ratio": 1.0,
+            "debug_info": {
+                "llm_calls": llm_call_count,
+                "goals_set": goals_set,
+                "actions_taken": actions_taken
+            }
         }
         
         try:
@@ -856,7 +862,12 @@ class RAGLangGraph:
                 "document_tokens_used": 0,
                 "document_tokens_limit": 0
             },
-            "compression_ratio": 1.0
+            "compression_ratio": 1.0,
+            "debug_info": {
+                "llm_calls": llm_call_count,
+                "goals_set": goals_set,
+                "actions_taken": actions_taken
+            }
         }
         
         try:
