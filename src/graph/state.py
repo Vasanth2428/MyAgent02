@@ -53,7 +53,6 @@ class ContextEngineState(TypedDict):
         current_task: Specific instruction for the next worker.
         worker_complete: Dict tracking completion status of each worker type.
         worker_outputs: Dict storing raw outputs from each worker.
-        parallel_tasks: List of tasks for parallel dispatch.
     """
     messages: Annotated[List[BaseMessage], add_messages]
     next_agent: Annotated[str, merge_next_agent]
@@ -65,4 +64,3 @@ class ContextEngineState(TypedDict):
     current_task: str
     worker_complete: Annotated[Dict[str, bool], merge_dict]
     worker_outputs: Annotated[Dict[str, str], merge_dict]
-    parallel_tasks: List[Dict]

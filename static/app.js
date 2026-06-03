@@ -348,7 +348,7 @@ MODE: ${(data.stats?.mode || 'N/A').toUpperCase()}
 HYBRID ALPHA: ${data.stats?.alpha || 0.5}
 PEAK RE-RANK SCORE: ${data.stats?.reranker_peak_score || 0}
 COMPRESSION RATIO: ${((data.stats?.compression_ratio || 0) * 100).toFixed(1)}%
-GROUNDING SCORE: ${(data.stats?.grounding_score || 0).toFixed(3)}
+GROUNDING SCORE: ${(data.stats?.grounding_score || 0).toFixed(3)} (heuristic only)
 EMBED GENERATION: ${latency.phase_2_embed_generation_ms || 0} ms
 WEAVIATE SEARCH: ${latency.phase_2_weaviate_search_ms || 0} ms
 HYDE GENERATION: ${latency.phase_1_5_hyde_ms || 0} ms

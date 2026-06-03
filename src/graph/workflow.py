@@ -47,39 +47,6 @@ def route_based_on_next_agent(state: dict) -> str:
         return "report_worker_node"
     elif next_agent == "synthesizer":
         return "synthesizer_node"
-    elif next_agent == "parallel":
-        return parallel_dispatch_node(state)
-    
-    return END
-
-
-def parallel_dispatch_node(state: dict) -> List[Send]:
-    """
-    Fan-out to multiple workers in parallel for independent tasks.
-    Used when supervisor identifies tasks that can run concurrently.
-    """
-    tasks = state.get("parallel_tasks", [])
-    worker_complete = state.get("worker_complete", {})
-    worker_outputs = state.get("worker_outputs", {})
-    scratchpad = state.get("scratchpad", "")
-    
-    sends = []
-    for task in tasks:
-        worker = task.get("worker")
-        subtask = task.get("task", "")
-        if worker and worker in ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "report_worker"]:
-            sends.append(Send(f"{worker}_node", {
-                "messages": state.get("messages", []),
-                "current_task": subtask,
-                "scratchpad": scratchpad,
-                "worker_complete": worker_complete,
-                "worker_outputs": worker_outputs
-            }))
-    
-    logger.info(f"[PARALLEL DISPATCH] Dispatching {len(sends)} workers in parallel: {[s.node for s in sends]}")
-    return sends
-
-
 def aggregate_parallel_results_node(state: dict) -> dict:
     """Merge worker outputs from state into scratchpad and return update."""
     scratchpad = state.get("scratchpad", "") or ""

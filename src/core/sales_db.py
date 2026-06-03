@@ -99,7 +99,10 @@ def execute_read_only_sql(query: str) -> str:
     Returns an error string if the query is destructive or invalid.
     """
     # Security: rudimentary block on destructive operations
-    forbidden_keywords = ["drop", "delete", "update", "insert", "alter", "create", "replace", "grant", "revoke"]
+    forbidden_keywords = [
+        "drop", "delete", "update", "insert", "alter", 
+        "create", "replace", "grant", "revoke", "union"
+    ]
     query_lower = query.lower()
     
     # Check if any forbidden word is present as a whole word

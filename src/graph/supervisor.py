@@ -24,22 +24,13 @@ Your duties:
 2. If a plan exists, evaluate the 'scratchpad' findings against the plan to check progress.
 3. Determine the next step. If all research steps are resolved, check if the user requested a report/summary document. If yes, route to the report_worker (value for next_agent: 'report_worker'). If no report is needed, route to the synthesizer (value for next_agent: 'synthesizer').
 4. Otherwise, select the next appropriate worker ('rag_worker', 'web_worker', 'utility_worker', 'scraper_worker', 'critic_worker', 'report_worker') and write a specific sub-task instruction for them (e.g., "Find competitor Z's revenue", "Calculate 10% of 1000000", "Scrape competitor website").
-5. CRITICAL: If multiple steps can be executed INDEPENDENTLY (e.g., searching documents AND searching web for different info), set next_agent to 'parallel' and list them in 'parallel_tasks' as [{"worker": "rag_worker", "task": "..."}, {"worker": "web_worker", "task": "..."}].
-6. Write the updated plan, next_agent, and current_task in the JSON response.
-
-29. CRITICAL: If multiple steps can be executed INDEPENDENTLY (e.g., searching documents AND searching web for different info), set next_agent to 'parallel' and list them in 'parallel_tasks'.
-30. Write the updated plan, next_agent, and current_task using the provided tool schema.
+5. Write the updated plan, next_agent, and current_task in the JSON response.
 """
-
-class ParallelTask(BaseModel):
-    worker: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker"] = Field(description="The worker to execute the task")
-    task: str = Field(description="The specific task instruction")
 
 class SupervisorDecision(BaseModel):
     plan: List[str] = Field(description="Step-by-step plan to answer the query")
-    next_agent: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "synthesizer", "parallel"] = Field(description="The next agent to route to")
+    next_agent: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "synthesizer"] = Field(description="The next agent to route to")
     current_task: str = Field(description="Specific instruction for the next worker", default="")
-    parallel_tasks: List[ParallelTask] = Field(description="List of tasks if next_agent is parallel", default_factory=list)
 
 
 def get_routing_model():
@@ -115,11 +106,10 @@ Accumulated Findings (Scratchpad):
         plan_out = response.plan
         next_agent = response.next_agent
         current_task = response.current_task
-        parallel_tasks = [{"worker": pt.worker, "task": pt.task} for pt in response.parallel_tasks]
     except Exception as e:
         logger.error(f"Supervisor routing/planning error: {e}")
         
-    valid_agents = ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "synthesizer", "FINISH", "parallel"]
+    valid_agents = ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "synthesizer", "FINISH"]
     if next_agent not in valid_agents or next_agent == "FINISH":
         next_agent = "synthesizer"
         
@@ -127,11 +117,8 @@ Accumulated Findings (Scratchpad):
         "plan": plan_out,
         "next_agent": next_agent,
         "current_task": current_task,
-        "steps_remaining": new_steps,
-        "parallel_tasks": parallel_tasks
+        "steps_remaining": new_steps
     }
     
     print(f"\n[SUPERVISOR] Next Node: '{next_agent}' | Task: '{current_task}' | Steps Left: {new_steps}")
-    if parallel_tasks:
-        print(f"[SUPERVISOR] Parallel tasks: {parallel_tasks}")
     return state_update

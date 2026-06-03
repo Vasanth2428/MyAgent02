@@ -19,54 +19,6 @@ from src.core.services.grounding_service import GroundingVerifier
 from tests.benchmark.gold_dataset import GOLD_DATASET
 
 
-@pytest.mark.asyncio
-async def run_benchmark_query(engine, question, supporting_facts):
-    """Run a single benchmark query and collect metrics."""
-    mock_retriever = MagicMock()
-    mock_retriever._connected = True
-    
-    def create_mock_results(facts, score=0.8):
-        return [{"text": fact, "score": score, "source": f"fact_{i}.txt", 
-                 "document_id": f"fid_{i}", "content_hash": f"ch_{i}"}
-                for i, fact in enumerate(facts)]
-    
-    async def mock_retrieve(*args, **kwargs):
-        return create_mock_results(supporting_facts), 1.0, 1.0, 2.0
-    
-    mock_retriever.retrieve_async = mock_retrieve
-    
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message = MagicMock()
-    mock_response.choices[0].message.content = f"Answer for: {question[:30]}"
-    mock_client.chat.completions.create.return_value = mock_response
-    mock_async_client = AsyncMock()
-    mock_async_client.chat.completions.create.return_value = mock_response
-    
-    dev_config = PipelineConfig(enable_hyde=False, enable_expansion=False, enable_reranking=False)
-    
-    with patch("src.core.engine.LLMService") as mock_llm_class:
-        mock_llm_instance = MagicMock()
-        mock_llm_instance.raw_client = mock_client
-        mock_llm_instance.async_client = mock_async_client
-        mock_llm_class.return_value = mock_llm_instance
-        
-        test_engine = RAGContextEngine(retriever=mock_retriever, pipeline_config=dev_config)
-        test_engine.generation_service.client = mock_client
-        
-        start_time = time.time()
-        result = await test_engine.ask_async(question, session_id=f"benchmark_{time.time()}")
-        latency = (time.time() - start_time) * 1000
-        
-        return {
-            "question": question,
-            "latency_ms": latency,
-            "grounding_score": result.get("stats", {}).get("grounding_score", 0),
-            "compression_ratio": result.get("stats", {}).get("compression_ratio", 1),
-            "context_used_percent": result.get("stats", {}).get("context_used_percent", 0),
-            "response": result.get("response", ""),
-        }
 
 
 def test_regression_technical_category_metrics():

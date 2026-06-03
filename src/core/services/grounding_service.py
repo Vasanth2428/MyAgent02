@@ -190,6 +190,9 @@ class GroundingVerifier:
         
         Returns: (grounding_score, list_of_unsupported_claims)
         """
+        # WARNING: Uses lexical overlap scoring only.
+        # Does not detect semantic negation or contradiction.
+        # Score is unreliable for production use.
         sentences = [s.strip() for s in re.split(r'[.!?]+\s*', answer) if len(s.strip()) > 10]
 
         if not sentences:
