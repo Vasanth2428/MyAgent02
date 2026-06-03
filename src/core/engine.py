@@ -81,9 +81,6 @@ class RAGContextEngine:
         self.hyde = HyDEGenerator(self.client)
         self.retrieval_service = RetrievalService(self.retriever)
 
-        # Initialize ReAct Agent
-        from src.core.agent import RAGAgent
-        self.agent = RAGAgent(self)
 
         # Initialize Multi-Agent Graph
         from src.graph.workflow import build_multi_agent_graph

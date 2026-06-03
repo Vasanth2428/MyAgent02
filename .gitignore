@@ -32,7 +32,6 @@ Antigravity Skills/
 
 # Logs
 logs/
-tests/results/
 reports/
 server.log
 *.log
