@@ -7,7 +7,7 @@
     <meta name="description" content="Professional retrieval-augmented generation context orchestrator and telemetry suite.">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=2.2.2">
+    <link rel="stylesheet" href="/static/styles.css?v=2.3.0">
 </head>
 <body>
     <div class="main-grid">
@@ -102,7 +102,23 @@
             </div>
         </aside>
 
-        <!-- CENTER PANEL: CHAT INTERFACE -->
+        <!-- CONVERSATION SIDEBAR -->
+        <aside class="conversations-sidebar" id="conversations-sidebar">
+            <div class="conv-header">
+                <span class="conv-header-title">Chats</span>
+                <button type="button" id="new-chat-btn" class="new-chat-btn" title="New Chat">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"/>
+                        <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="conv-list" id="conv-list">
+                <div class="conv-list-empty" id="conv-list-empty">No conversations yet.</div>
+            </div>
+        </aside>
+
+
         <main class="chat-container">
             <!-- CHAT HEADER -->
             <header class="chat-header">

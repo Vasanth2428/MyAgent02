@@ -27,10 +27,11 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from pypdf import PdfReader
 from dotenv import load_dotenv
+import uuid
 
 from src.core.config import CHUNK_SIZE, CHUNK_OVERLAP, PipelineConfig
 from src.core.retriever import WeaviateRetriever
@@ -138,6 +139,17 @@ class QueryRequest(BaseModel):
     context_limit: Optional[int] = None
 
 
+class CreateSessionRequest(BaseModel):
+    """Request schema for creating a new session."""
+    session_id: Optional[str] = None
+    title: str = "New Chat"
+
+
+class RenameSessionRequest(BaseModel):
+    """Request schema for renaming a session."""
+    title: str
+
+
 # ------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------
@@ -159,6 +171,8 @@ async def query_rag(request: QueryRequest):
         raise HTTPException(status_code=500, detail="Engine not ready")
     try:
         logger.info(f"Query from session {request.session_id}: {request.question[:50]}...")
+        # Keep session's updated_at fresh
+        rag.persistent_memory.touch_session(request.session_id)
         result = await rag.ask_async(
             request.question,
             session_id=request.session_id,
@@ -263,6 +277,46 @@ async def get_session_history(session_id: str):
     if not rag:
         raise HTTPException(status_code=500, detail="Engine not ready")
     return rag.persistent_memory.get_history(session_id)
+
+
+# ------------------------------------------------------------------
+# Session Management Endpoints
+# ------------------------------------------------------------------
+
+@app.get("/sessions")
+async def list_sessions():
+    """Returns all sessions ordered by most recently updated."""
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    return rag.persistent_memory.list_sessions()
+
+
+@app.post("/sessions", status_code=201)
+async def create_session(request: CreateSessionRequest):
+    """Creates a new chat session."""
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    sid = request.session_id or ("SID-" + uuid.uuid4().hex[:8].upper())
+    rag.persistent_memory.create_session(sid, request.title)
+    return {"session_id": sid, "title": request.title}
+
+
+@app.patch("/sessions/{session_id}")
+async def rename_session(session_id: str, request: RenameSessionRequest):
+    """Renames an existing session."""
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    rag.persistent_memory.rename_session(session_id, request.title.strip()[:80])
+    return {"session_id": session_id, "title": request.title}
+
+
+@app.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: str):
+    """Deletes a session and all its conversation history."""
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    rag.persistent_memory.delete_session(session_id)
+    return None
 
 
 if __name__ == "__main__":

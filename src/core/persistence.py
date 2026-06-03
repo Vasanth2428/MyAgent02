@@ -57,7 +57,7 @@ class PersistentMemoryStore:
         return _execute()
 
     def _init_db(self):
-        """Creates the memory table and indexes if they don't exist."""
+        """Creates the memory and sessions tables and indexes if they don't exist."""
         def _init(conn):
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory (
@@ -80,6 +80,15 @@ class PersistentMemoryStore:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_memory_session_timestamp 
                 ON memory (session_id, timestamp)
+            """)
+            # Sessions metadata table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title      TEXT DEFAULT 'New Chat',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
             """)
             conn.commit()
         self.execute_with_retry(_init)
@@ -109,3 +118,64 @@ class PersistentMemoryStore:
         res = self.execute_with_retry(_fetch)
         logger.info(f"Restored {len(res)} entries for session {session_id} in {(time.time() - t_start)*1000:.1f}ms")
         return res
+
+    # ------------------------------------------------------------------
+    # Session Management
+    # ------------------------------------------------------------------
+
+    def create_session(self, session_id: str, title: str = "New Chat") -> None:
+        """Creates or upserts a session row in the sessions table."""
+        def _upsert(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (session_id, title) VALUES (?, ?)",
+                (session_id, title)
+            )
+            conn.commit()
+        self.execute_with_retry(_upsert)
+
+    def list_sessions(self) -> List[Dict]:
+        """Returns all sessions ordered by most recently updated, with message counts."""
+        def _fetch(conn):
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT s.session_id, s.title, s.created_at, s.updated_at,
+                       COUNT(m.rowid) as message_count
+                FROM sessions s
+                LEFT JOIN memory m ON m.session_id = s.session_id
+                GROUP BY s.session_id
+                ORDER BY s.updated_at DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        return self.execute_with_retry(_fetch)
+
+    def rename_session(self, session_id: str, title: str) -> None:
+        """Updates the title of an existing session."""
+        def _update(conn):
+            conn.execute(
+                "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+                (title, session_id)
+            )
+            conn.commit()
+        self.execute_with_retry(_update)
+
+    def delete_session(self, session_id: str) -> None:
+        """Deletes a session and all its message history."""
+        def _delete(conn):
+            conn.execute("DELETE FROM memory WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            conn.commit()
+        self.execute_with_retry(_delete)
+
+    def touch_session(self, session_id: str) -> None:
+        """Upserts a session and bumps its updated_at timestamp."""
+        def _touch(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)",
+                (session_id,)
+            )
+            conn.execute(
+                "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+                (session_id,)
+            )
+            conn.commit()
+        self.execute_with_retry(_touch)

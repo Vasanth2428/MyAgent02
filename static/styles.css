@@ -87,7 +87,7 @@ main {
 /* ---- Main Grid Layout ---- */
 .main-grid {
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr) 400px;
+    grid-template-columns: 260px 200px minmax(0, 1fr) 400px;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
@@ -96,7 +96,7 @@ main {
 
 /* Collapsed Right Sidebar state */
 .main-grid.hud-collapsed {
-    grid-template-columns: 280px minmax(0, 1fr) !important;
+    grid-template-columns: 260px 200px minmax(0, 1fr) !important;
 }
 
 .main-grid.hud-collapsed .sidebar-right {
@@ -1645,4 +1645,190 @@ main {
 .agent-step-card.parallel-branch.active {
     border-color: var(--accent-indigo);
     background: rgba(99, 102, 241, 0.02);
+}
+
+/* ================================================================
+   CONVERSATION SIDEBAR
+   ================================================================ */
+
+.conversations-sidebar {
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+}
+
+.conv-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 0.85rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.conv-header-title {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.new-chat-btn {
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 6px;
+    color: var(--accent-indigo);
+    cursor: pointer;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.2s, transform 0.15s;
+    flex-shrink: 0;
+}
+
+.new-chat-btn svg {
+    width: 13px;
+    height: 13px;
+}
+
+.new-chat-btn:hover {
+    background: rgba(99, 102, 241, 0.28);
+    transform: scale(1.08);
+}
+
+.conv-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.4rem 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+.conv-list::-webkit-scrollbar { width: 3px; }
+.conv-list::-webkit-scrollbar-track { background: transparent; }
+.conv-list::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 2px; }
+
+.conv-list-empty {
+    padding: 1rem 0.85rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-align: center;
+    opacity: 0.6;
+    margin-top: 1.5rem;
+}
+
+.conv-item {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0.5rem 0.6rem;
+    margin: 0.15rem 0.4rem;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+    position: relative;
+    group: true;
+}
+
+.conv-item:hover {
+    background: rgba(255,255,255,0.04);
+    border-color: var(--border-color);
+}
+
+.conv-item.active {
+    background: rgba(99, 102, 241, 0.1);
+    border-color: rgba(99, 102, 241, 0.25);
+}
+
+.conv-item-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.conv-title {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.3;
+}
+
+.conv-item.active .conv-title {
+    color: var(--accent-indigo);
+}
+
+.conv-meta {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.conv-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+}
+
+.conv-item:hover .conv-actions,
+.conv-item.active .conv-actions {
+    opacity: 1;
+}
+
+.conv-action-btn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+
+.conv-action-btn svg { width: 12px; height: 12px; }
+
+.conv-action-btn:hover {
+    background: rgba(255,255,255,0.08);
+    color: var(--text-primary);
+}
+
+.conv-action-btn.danger:hover {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+/* Inline rename input */
+.conv-rename-input {
+    width: 100%;
+    background: var(--bg-canvas);
+    border: 1px solid var(--accent-indigo);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    padding: 1px 5px;
+    outline: none;
+    font-family: var(--font-sans);
 }

@@ -51,9 +51,10 @@ const toastContainer          = document.getElementById('toast-container');
 const scrollBottomFab         = document.getElementById('scroll-bottom-fab');
 
 // ---- Session State Variables ----
-let sid = localStorage.getItem('station_sid') || 'SID-' + Math.random().toString(36).substr(2, 6).toUpperCase();
+// sid is managed by ConversationManager; initialise to last used or a fresh ID
+let sid = localStorage.getItem('station_sid') || 'SID-' + Math.random().toString(36).substr(2, 8).toUpperCase();
 localStorage.setItem('station_sid', sid);
-sessionTag.textContent = `SID: ${sid}`;
+if (sessionTag) sessionTag.textContent = `SID: ${sid}`;
 
 let contextLimit = parseInt(contextLimitSlider.value);
 let abortController = null;
@@ -1207,3 +1208,269 @@ if (chatWindow && mainGrid) {
     });
 }
 
+
+// ================================================================
+// CONVERSATION MANAGER
+// ================================================================
+
+const ConversationManager = (() => {
+    const convList     = document.getElementById('conv-list');
+    const convEmpty    = document.getElementById('conv-list-empty');
+    const newChatBtn   = document.getElementById('new-chat-btn');
+
+    // ---- helpers ----
+    function relativeTime(dateStr) {
+        const now  = Date.now();
+        const then = new Date(dateStr + (dateStr.endsWith('Z') ? '' : 'Z')).getTime();
+        const diff = Math.floor((now - then) / 1000);
+        if (diff < 60)       return 'just now';
+        if (diff < 3600)     return Math.floor(diff / 60) + 'm ago';
+        if (diff < 86400)    return Math.floor(diff / 3600) + 'h ago';
+        return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function setActiveSid(newSid) {
+        sid = newSid;
+        localStorage.setItem('station_sid', newSid);
+        if (sessionTag) sessionTag.textContent = `SID: ${newSid}`;
+    }
+
+    // ---- render ----
+    function renderList(sessions) {
+        if (!convList) return;
+        // Clear dynamic items (keep empty placeholder)
+        convList.querySelectorAll('.conv-item').forEach(el => el.remove());
+
+        if (!sessions || sessions.length === 0) {
+            if (convEmpty) convEmpty.style.display = 'block';
+            return;
+        }
+        if (convEmpty) convEmpty.style.display = 'none';
+
+        sessions.forEach(session => {
+            const item = document.createElement('div');
+            item.className = 'conv-item' + (session.session_id === sid ? ' active' : '');
+            item.dataset.sid = session.session_id;
+
+            item.innerHTML = `
+                <div class="conv-item-text">
+                    <div class="conv-title" title="${session.title}">${session.title}</div>
+                    <div class="conv-meta">${session.message_count} msg &middot; ${relativeTime(session.updated_at)}</div>
+                </div>
+                <div class="conv-actions">
+                    <button class="conv-action-btn rename-btn" title="Rename">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                    </button>
+                    <button class="conv-action-btn danger delete-btn" title="Delete">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                            <path d="M10 11v6"/><path d="M14 11v6"/>
+                            <path d="M9 6V4h6v2"/>
+                        </svg>
+                    </button>
+                </div>
+            `;
+
+            // Switch session on click (ignore clicks on action buttons)
+            item.addEventListener('click', (e) => {
+                if (e.target.closest('.conv-action-btn')) return;
+                if (session.session_id === sid) return;
+                switchSession(session.session_id);
+            });
+
+            // Rename
+            item.querySelector('.rename-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                startInlineRename(item, session);
+            });
+
+            // Delete
+            item.querySelector('.delete-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                deleteSession(session.session_id, item);
+            });
+
+            convList.appendChild(item);
+        });
+    }
+
+    // ---- load sessions ----
+    async function loadSessions() {
+        try {
+            const res = await fetch(`${API_BASE}/sessions`);
+            if (!res.ok) return;
+            const sessions = await res.json();
+            renderList(sessions);
+        } catch (e) {
+            console.warn('Could not load sessions:', e);
+        }
+    }
+
+    // ---- switch session ----
+    async function switchSession(newSid) {
+        setActiveSid(newSid);
+        // Highlight active item
+        document.querySelectorAll('.conv-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.sid === newSid);
+        });
+        // Clear chat and reload history
+        if (chatWindow) {
+            chatWindow.innerHTML = '<div id="chat-skeleton" class="chat-skeleton" style="display:none"></div>';
+        }
+        try {
+            const res  = await fetch(`${API_BASE}/history/${newSid}`);
+            const hist = await res.json();
+            hist.forEach(entry => {
+                if (entry.role === 'user') {
+                    appendMessage('user', entry.text);
+                } else if (entry.role === 'assistant') {
+                    appendMessage('assistant', entry.text);
+                }
+            });
+            if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+        } catch (e) {
+            console.warn('Could not load history:', e);
+        }
+    }
+
+    // ---- create new session ----
+    async function createNewChat() {
+        try {
+            const res  = await fetch(`${API_BASE}/sessions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: 'New Chat' })
+            });
+            const data = await res.json();
+            setActiveSid(data.session_id);
+            // Clear chat window
+            if (chatWindow) {
+                chatWindow.innerHTML = '<div id="chat-skeleton" class="chat-skeleton" style="display:none"></div>';
+            }
+            await loadSessions();
+            // Focus input
+            if (input) input.focus();
+        } catch (e) {
+            console.error('Failed to create session:', e);
+        }
+    }
+
+    // ---- auto-title from first message ----
+    async function autoTitleFromFirstMessage(question) {
+        // Only title if current title is generic
+        const activeItem = document.querySelector(`.conv-item[data-sid="${sid}"]`);
+        if (!activeItem) return;
+        const titleEl = activeItem.querySelector('.conv-title');
+        if (!titleEl || (titleEl.textContent !== 'New Chat' && titleEl.textContent !== sid)) return;
+        const title = question.trim().slice(0, 45) + (question.length > 45 ? '...' : '');
+        try {
+            await fetch(`${API_BASE}/sessions/${sid}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title })
+            });
+            titleEl.textContent = title;
+            titleEl.title = title;
+        } catch (e) { /* silent */ }
+    }
+
+    // ---- inline rename ----
+    function startInlineRename(item, session) {
+        const titleEl = item.querySelector('.conv-title');
+        const currentTitle = titleEl.textContent;
+        const inp = document.createElement('input');
+        inp.className = 'conv-rename-input';
+        inp.value = currentTitle;
+        titleEl.replaceWith(inp);
+        inp.focus();
+        inp.select();
+
+        const commit = async () => {
+            const newTitle = inp.value.trim() || currentTitle;
+            const span = document.createElement('div');
+            span.className = 'conv-title';
+            span.textContent = newTitle;
+            span.title = newTitle;
+            inp.replaceWith(span);
+            if (newTitle !== currentTitle) {
+                try {
+                    await fetch(`${API_BASE}/sessions/${session.session_id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ title: newTitle })
+                    });
+                } catch (e) { console.error('Rename failed:', e); }
+            }
+        };
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+            if (e.key === 'Escape') { inp.value = currentTitle; inp.blur(); }
+        });
+    }
+
+    // ---- delete session ----
+    async function deleteSession(delSid, item) {
+        if (!confirm(`Delete this conversation? This cannot be undone.`)) return;
+        try {
+            await fetch(`${API_BASE}/sessions/${delSid}`, { method: 'DELETE' });
+            item.remove();
+            // If we deleted the active session, create a new one
+            if (delSid === sid) {
+                await createNewChat();
+            }
+            // Show empty state if no items left
+            if (!convList.querySelector('.conv-item')) {
+                if (convEmpty) convEmpty.style.display = 'block';
+            }
+        } catch (e) {
+            console.error('Delete failed:', e);
+        }
+    }
+
+    // ---- wire up new chat button ----
+    if (newChatBtn) {
+        newChatBtn.addEventListener('click', createNewChat);
+    }
+
+    // ---- init: ensure current session is registered ----
+    async function init() {
+        // Register current session so it appears in the list
+        try {
+            await fetch(`${API_BASE}/sessions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sid, title: 'New Chat' })
+            });
+        } catch (e) { /* already exists — that's fine */ }
+        await loadSessions();
+    }
+
+    init();
+
+    return { loadSessions, autoTitleFromFirstMessage };
+})();
+
+// ---- Hook autoTitle into the form submit ----
+// We intercept after the first message is sent
+const _originalFormSubmit = form ? form.onsubmit : null;
+if (form) {
+    const origListener = form._convHooked;
+    if (!origListener) {
+        form._convHooked = true;
+        form.addEventListener('submit', async (e) => {
+            const question = input ? input.value.trim() : '';
+            if (question) {
+                // Let the original submit handler run first (it's on the same event)
+                // then auto-title this session from the first message
+                setTimeout(() => ConversationManager.autoTitleFromFirstMessage(question), 600);
+                // Refresh sidebar after response
+                setTimeout(() => ConversationManager.loadSessions(), 3000);
+            }
+        });
+    }
+}
