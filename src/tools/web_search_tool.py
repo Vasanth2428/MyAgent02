@@ -32,9 +32,24 @@ def web_search(query: str, max_results: int = 5) -> List[Dict]:
 
 
 def mock_web_search(query: str) -> List[Dict]:
-    """Live web search fallback when Tavily is unavailable."""
-    # Instantly return mock to prevent async loop deadlocks during heavy test execution
-    return [{"title": "Mock Search Result", "url": "https://mock.example.com", "content": f"Simulated content for: {query}"}]
+    """Fallback web search using DuckDuckGo when Tavily is unavailable."""
+    try:
+        from ddgs import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+            if not results:
+                return [{"title": "No Results", "url": "#", "content": f"No results found for '{query}'."}]
+            return [
+                {
+                    "title": r.get("title", "No Title"),
+                    "url": r.get("href", "#"),
+                    "content": r.get("body", "")
+                }
+                for r in results
+            ]
+    except Exception as e:
+        logger.error(f"DDGS search error: {e}")
+        return [{"title": "Search Unavailable", "url": "#", "content": f"Web search failed: {e}"}]
 
 
 def format_search_results(results: List[Dict]) -> str:

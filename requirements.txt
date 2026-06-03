@@ -220,4 +220,5 @@ zipp==3.23.0
 
 langgraph
 langchain-core
-duckduckgo-search
+ddgs
+tavily-python
