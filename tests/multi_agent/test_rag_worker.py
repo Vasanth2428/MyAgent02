@@ -45,4 +45,4 @@ def test_rag_worker_with_documents():
     result = rag_worker_node(state, document_tool=mock_search)
     
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"

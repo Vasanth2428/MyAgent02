@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from core.engine import RAGContextEngine
+from src.core.engine import RAGContextEngine
 
 class TestContextOverflow(unittest.TestCase):
 
@@ -10,7 +10,7 @@ class TestContextOverflow(unittest.TestCase):
         self.retriever.get_count.return_value = 10
         
         # Instantiate engine
-        with patch('core.engine.LLMService') as mock_llm_service:
+        with patch('src.core.engine.LLMService') as mock_llm_service:
             mock_llm = MagicMock()
             mock_llm_service.return_value = mock_llm
             self.engine = RAGContextEngine(self.retriever)
@@ -76,7 +76,7 @@ class TestContextOverflow(unittest.TestCase):
         self.assertLess(len(memory.entries), 5, "Memory entries should have been pruned")
         self.assertLess(mem_tkn, 100)
 
-    @patch('core.compressor.Compressor.compress')
+    @patch('src.core.compressor.Compressor.compress')
     def test_handle_context_overflow_compresses_knowledge(self, mock_compress):
         """If pruning memory isn't enough, it should compress documents aggressively."""
         query = "Explain retrieval."

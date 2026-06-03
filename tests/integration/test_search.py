@@ -3,9 +3,9 @@ import sys
 import os
 from dotenv import load_dotenv
 
-# Ensure we can import from core
+# Ensure we can import from src.core
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from core.retriever import WeaviateRetriever
+from src.core.retriever import WeaviateRetriever
 
 class TestWeaviateRetriever(unittest.TestCase):
     @classmethod

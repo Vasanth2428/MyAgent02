@@ -1,0 +1,91 @@
+import os
+import logging
+from langgraph.graph import END
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_groq import ChatGroq
+
+logger = logging.getLogger("MultiAgent.Synthesizer")
+
+
+def get_reasoning_model():
+    """Get the LLM model for synthesis via Groq."""
+    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
+    api_key = os.getenv("AGENT_API_KEY")
+    return ChatGroq(model=model_name, temperature=0.3, api_key=api_key)
+
+
+def synthesizer_node(state: dict) -> dict:
+    """
+    Synthesizes the final response using the original query and accumulated scratchpad findings.
+    Checks if all planned tasks are complete before finishing.
+    """
+    logger.info("Synthesizer node executing...")
+    
+    messages = state.get("messages", [])
+    scratchpad = state.get("scratchpad", "")
+    plan = state.get("plan", [])
+    worker_complete = state.get("worker_complete", {})
+    
+    # Filter worker messages out of the chat history
+    worker_names = {"rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker"}
+    clean_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            if msg.get("name") in worker_names:
+                continue
+            clean_messages.append(msg)
+        else:
+            if hasattr(msg, "name") and msg.name in worker_names:
+                continue
+            clean_messages.append(msg)
+            
+    # Retrieve original user query from messages (in reverse to get the latest intent)
+    original_query = ""
+    for msg in reversed(clean_messages):
+        if isinstance(msg, dict):
+            if msg.get("role") == "user":
+                original_query = msg.get("content", "")
+                break
+        elif hasattr(msg, "content") and (msg.__class__.__name__ == "HumanMessage" or getattr(msg, "type", "") == "human"):
+            original_query = msg.content
+            break
+            
+    if not original_query and clean_messages:
+        # Fallback to the text of the latest message
+        last_msg = clean_messages[-1]
+        original_query = last_msg.get("content", "") if isinstance(last_msg, dict) else getattr(last_msg, "content", "")
+        
+    synthesis_prompt = f"""You are an expert assistant. Your job is to construct a direct, coherent, and comprehensive response to the user's original query by synthesizing the findings gathered by your specialized team of workers.
+
+User Original Query:
+"{original_query}"
+
+Accumulated Cooperative Findings:
+{scratchpad if scratchpad else "(No findings retrieved)"}
+
+Formatting Guidelines:
+1. Provide a direct and structured response answering the query.
+2. Use markdown formatting (headers, lists, bold text) for clarity.
+3. If findings are missing or contradictory, resolve them logically or state the missing details clearly.
+4. Do NOT mention the internal team, 'scratchpad', 'workers', or 'agents' in the final response. Present the answer as a unified response from a single assistant.
+"""
+
+    model = get_reasoning_model()
+    try:
+        response = model.invoke([
+            SystemMessage(content="You are a helpful AI assistant synthesizing information."),
+            HumanMessage(content=synthesis_prompt)
+        ])
+        final_answer = response.content.strip() if response.content else ""
+    except Exception as e:
+        logger.error(f"Error in synthesizer node: {e}")
+        # Fallback: compile raw scratchpad if model fails
+        final_answer = f"Here are the findings gathered:\n\n{scratchpad}"
+        
+    print(f"\n[SYNTHESIZER] Compiled final answer: {final_answer[:60]}...")
+    return {
+        "messages": [AIMessage(content=final_answer)],
+        "final_answer": final_answer,
+        "worker_complete": worker_complete,
+        "next_agent": "FINISH"
+    }

@@ -1,5 +1,5 @@
 import unittest
-from core.reranker import NeuralReranker
+from src.core.reranker import NeuralReranker
 
 class TestRerankerSemantics(unittest.TestCase):
     def test_semantic_precision_over_keywords(self):

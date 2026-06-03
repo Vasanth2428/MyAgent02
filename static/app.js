@@ -57,6 +57,7 @@ sessionTag.textContent = `SID: ${sid}`;
 
 let contextLimit = parseInt(contextLimitSlider.value);
 let abortController = null;
+let isInParallelMode = false;
 
 // ---- Explicit App State Model ----
 const AppState = {
@@ -86,8 +87,8 @@ document.querySelectorAll('input[name="engine-mode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
         if (e.target.checked) {
             const mode = e.target.value;
-            activeModeBadge.textContent = mode.replace('_', ' ').toUpperCase();
-            addLog(`Processing mode changed to ${mode.replace('_', ' ').toUpperCase()}`, "SYSTEM");
+            activeModeBadge.textContent = mode === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : mode.replace('_', ' ').toUpperCase();
+            addLog(`Processing mode changed to ${mode === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : mode.replace('_', ' ').toUpperCase()}`, "SYSTEM");
         }
     });
 });
@@ -219,7 +220,7 @@ function addMsg(text, type = 'ai', telemetryData = null) {
         });
         
         thinkingHtml = `
-            <details class="thinking-accordion">
+            <details class="thinking-accordion" open>
                 <summary class="thinking-summary">
                     <span style="color: var(--accent-emerald); font-weight: bold; font-size: 0.8rem; margin-right: 0.2rem;">✓</span>
                     <span class="thinking-status">Thought process completed</span>
@@ -379,19 +380,35 @@ function addOrUpdateStep(stepType, name, detail = '') {
     if (emptyMsg) emptyMsg.remove();
     
     if (stepType === 'node') {
-        // Mark any previous active step as completed
+        const isParallelNode = isInParallelMode && name !== 'aggregate_parallel_results_node' && name !== 'supervisor_node';
+        
+        // Mark previous active steps as completed, unless we are entering/running parallel branches
         const activeSteps = listContainer.querySelectorAll('.agent-step-card.active');
         activeSteps.forEach(card => {
-            card.classList.remove('active');
-            card.classList.add('completed');
-            const statusBadge = card.querySelector('.step-status-badge');
-            if (statusBadge) {
-                statusBadge.textContent = 'COMPLETED';
-                statusBadge.className = 'step-status-badge status-completed';
+            const isCardParallel = card.classList.contains('parallel-branch');
+            const shouldComplete = !isParallelNode || !isCardParallel;
+            
+            if (shouldComplete) {
+                card.classList.remove('active');
+                card.classList.add('completed');
+                const statusBadge = card.querySelector('.step-status-badge');
+                if (statusBadge) {
+                    statusBadge.textContent = 'COMPLETED';
+                    statusBadge.className = 'step-status-badge status-completed';
+                }
             }
         });
         
         const friendlyNames = {
+            'supervisor_node': 'Routing Supervisor [Cooperative Planner]',
+            'rag_worker_node': 'RAG Specialist [Knowledge Retrieval]',
+            'web_worker_node': 'Web Search Specialist [Internet Queries]',
+            'utility_worker_node': 'Utility Specialist [Computations & Logic]',
+            'scraper_worker_node': 'Scraper Specialist [URL Extraction]',
+            'critic_worker_node': 'Critic Specialist [Fact-Check & Audit]',
+            'report_worker_node': 'Report Specialist [Document Generation]',
+            'synthesizer_node': 'Response Synthesizer [Final Fusion]',
+            'aggregate_parallel_results_node': 'Result Aggregator [Cooperative Join]',
             'early_exit_check': 'Early Exit Validation',
             'early_exit_execute': 'Fast Path Response',
             'overflow_recovery': 'Context Overflow Safeguard',
@@ -400,7 +417,6 @@ function addOrUpdateStep(stepType, name, detail = '') {
             'execute_tool': 'Tool Execution Core',
             'synthesis': 'Final Answer Synthesis',
             'streaming_final_answer': 'Streaming Assistant Output',
-            // Non-agentic pipeline states for fallback
             'WAITING_FOR_REASONING': 'LLM Inference Reasoning',
             'WAITING_FOR_ACTION': 'Pipeline Gating & Routing',
             'EXECUTING_TOOL': 'Information Extraction & Search',
@@ -410,12 +426,18 @@ function addOrUpdateStep(stepType, name, detail = '') {
         const displayName = friendlyNames[name] || name;
         
         const card = document.createElement('div');
-        card.className = 'agent-step-card active';
+        let cardClass = 'agent-step-card active';
+        let parallelBadge = '';
+        if (isParallelNode) {
+            cardClass += ' parallel-branch';
+            parallelBadge = '<span class="step-parallel-badge">COOPERATIVE PARALLEL</span>';
+        }
+        card.className = cardClass;
         card.id = `step-node-${name}-${Date.now()}`; // unique id to prevent clash
         card.innerHTML = `
             <div class="step-header">
                 <span class="step-icon-dot"></span>
-                <span class="step-name">${escapeHtml(displayName)}</span>
+                <span class="step-name">${escapeHtml(displayName)} ${parallelBadge}</span>
                 <span class="step-status-badge status-active">ACTIVE</span>
             </div>
             <div class="step-details" style="display: none;"></div>
@@ -464,7 +486,8 @@ form.addEventListener('submit', async (e) => {
     addMsg(query, 'user');
     
     const mode = document.querySelector('input[name="engine-mode"]:checked').value;
-    activeModeBadge.textContent = mode.replace('_', ' ').toUpperCase();
+    activeModeBadge.textContent = mode === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : mode.replace('_', ' ').toUpperCase();
+    isInParallelMode = false; // Reset parallel tracking state
     
     addLog(`Initiating streaming request (Mode: ${mode} | Limit: ${contextLimit} TKN)`, 'REQUEST');
 
@@ -569,6 +592,9 @@ form.addEventListener('submit', async (e) => {
                 };
 
                 if (data.event === "node_start") {
+                    if (data.node === "aggregate_parallel_results_node") {
+                        isInParallelMode = false;
+                    }
                     addOrUpdateStep("node", data.node);
                 }
                 else if (data.event === "thought") {
@@ -582,12 +608,34 @@ form.addEventListener('submit', async (e) => {
                     inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
                 } 
                 else if (data.event === "action") {
+                    if (data.tool === "Parallel Dispatch") {
+                        isInParallelMode = true;
+                    }
+                    
+                    let toolName = data.tool;
+                    if (toolName.startsWith("Route to ")) {
+                        const target = toolName.replace("Route to ", "") + "_node";
+                        const mapping = {
+                            'supervisor_node': 'Routing Supervisor [Cooperative Planner]',
+                            'rag_worker_node': 'RAG Specialist [Knowledge Retrieval]',
+                            'web_worker_node': 'Web Search Specialist [Internet Queries]',
+                            'utility_worker_node': 'Utility Specialist [Computations & Logic]',
+                            'scraper_worker_node': 'Scraper Specialist [URL Extraction]',
+                            'critic_worker_node': 'Critic Specialist [Fact-Check & Audit]',
+                            'report_worker_node': 'Report Specialist [Document Generation]',
+                            'synthesizer_node': 'Response Synthesizer [Final Fusion]',
+                            'aggregate_parallel_results_node': 'Result Aggregator [Cooperative Join]'
+                        };
+                        const friendlyTarget = mapping[target] || target.replace("_node", "");
+                        toolName = `Delegate to ${friendlyTarget}`;
+                    }
+                    
                     addLog(`Executing tool: ${data.tool}[${data.input}]`, "ACTION");
-                    addOrUpdateStep("action", data.tool, data.input);
+                    addOrUpdateStep("action", toolName, data.input);
                     ensureAccordion();
                     const line = document.createElement('div');
                     line.className = 'step-action-log';
-                    line.innerHTML = `🔧 Action: Call ${escapeHtml(data.tool)} with argument "${escapeHtml(data.input)}"`;
+                    line.innerHTML = `🔧 Action: ${escapeHtml(toolName)} with argument "${escapeHtml(data.input)}"`;
                     inlineThinkingDetails.appendChild(line);
                     inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
                 }
@@ -655,7 +703,8 @@ form.addEventListener('submit', async (e) => {
                              spinner.style.fontSize = '0.8rem';
                              spinner.style.marginRight = '0.2rem';
                          }
-                         inlineThinkingAccordion.removeAttribute('open');
+                         // Keep the accordion expanded to show all turns inline
+                         // inlineThinkingAccordion.removeAttribute('open');
                          inlineThinkingAccordion = null;
                          inlineThinkingDetails = null;
                      }

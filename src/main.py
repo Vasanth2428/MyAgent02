@@ -48,8 +48,15 @@ def run_query(query: str, thread_id: str = "default"):
         "next_agent": "FINISH",
         "context_notes": [],
         "steps_remaining": 10,
-        "final_answer": ""
+        "final_answer": "",
+        "plan": [],
+        "scratchpad": "",
+        "current_task": "",
+        "worker_complete": {},
+        "worker_outputs": {},
+        "parallel_tasks": []
     }
+    
     
     result = multi_agent_graph.invoke(initial_state, config=config)
     return result

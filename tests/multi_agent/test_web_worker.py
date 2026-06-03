@@ -22,7 +22,7 @@ def test_web_worker_routing():
     result = web_worker_node(state, web_search_tool=mock_search)
     
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"
 
 
 def test_web_worker_no_results():

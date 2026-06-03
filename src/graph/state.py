@@ -1,12 +1,41 @@
 # State schema for multi-agent system.
-from typing import List, Literal, Optional, Annotated
+from typing import List, Literal, Optional, Annotated, Dict
 from typing_extensions import TypedDict
 from langchain_core.messages import BaseMessage
+
 try:
     from langgraph.graph.message import add_messages
 except ImportError:
     def add_messages(existing: List, new: List) -> List:
         return existing + new
+
+
+def merge_dict(existing: dict, new: dict) -> dict:
+    if not existing:
+        return new or {}
+    if not new:
+        return existing or {}
+    return {**existing, **new}
+
+
+def merge_next_agent(existing: str, new: str) -> str:
+    return new or existing
+
+
+def merge_scratchpad(existing: str, new: str) -> str:
+    if not existing:
+        return new or ""
+    if not new:
+        return existing or ""
+    existing_lines = [line.strip() for line in existing.split("\n") if line.strip()]
+    new_lines = [line.strip() for line in new.split("\n") if line.strip()]
+    
+    merged_lines = list(existing_lines)
+    for line in new_lines:
+        if line not in merged_lines:
+            merged_lines.append(line)
+            
+    return "\n".join(merged_lines)
 
 
 class ContextEngineState(TypedDict):
@@ -19,9 +48,21 @@ class ContextEngineState(TypedDict):
         context_notes: Accumulated external notes (for context engine variant).
         steps_remaining: Budget for bounded loop.
         final_answer: Final response when supervisor ends.
+        plan: Step-by-step plan constructed by supervisor.
+        scratchpad: Accumulated findings from all workers (blackboard).
+        current_task: Specific instruction for the next worker.
+        worker_complete: Dict tracking completion status of each worker type.
+        worker_outputs: Dict storing raw outputs from each worker.
+        parallel_tasks: List of tasks for parallel dispatch.
     """
     messages: Annotated[List[BaseMessage], add_messages]
-    next_agent: str
+    next_agent: Annotated[str, merge_next_agent]
     context_notes: List[str]
     steps_remaining: int
     final_answer: str
+    plan: List[str]
+    scratchpad: Annotated[str, merge_scratchpad]
+    current_task: str
+    worker_complete: Annotated[Dict[str, bool], merge_dict]
+    worker_outputs: Annotated[Dict[str, str], merge_dict]
+    parallel_tasks: List[Dict]

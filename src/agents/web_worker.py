@@ -34,30 +34,46 @@ def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
         from src.tools.web_search_tool import web_search, format_search_results
         web_search_tool = web_search
     
-    messages = state.get("messages", [])
+    current_task = state.get("current_task", "")
+    scratchpad = state.get("scratchpad", "")
     
-    last_user_query = ""
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            last_user_query = sanitize_user_input(msg.get("content", ""))
-            break
-        elif isinstance(msg, HumanMessage):
-            last_user_query = sanitize_user_input(msg.content)
-            break
-    
-    if not last_user_query:
-        return {"final_answer": "No query provided.", "next_agent": "FINISH"}
+    target_query = current_task if current_task else ""
+    if not target_query:
+        messages = state.get("messages", [])
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                target_query = sanitize_user_input(msg.get("content", ""))
+                break
+            elif isinstance(msg, HumanMessage):
+                target_query = sanitize_user_input(msg.content)
+                break
+                
+    if not target_query:
+        return {
+            "messages": [AIMessage(content="No query provided.", name="web_worker")],
+            "scratchpad": scratchpad,
+            "worker_complete": {"web_worker": True},
+            "worker_outputs": {"web_worker": "No query provided."},
+            "worker_type": "web_worker",
+            "next_agent": "supervisor"
+        }
     
     try:
-        print(f"\n[WEB WORKER] Executing web search for: '{last_user_query}'")
-        results = web_search_tool(last_user_query)
+        print(f"\n[WEB WORKER] Executing web search for: '{target_query}'")
+        results = web_search_tool(target_query)
         results = truncate_results(results)
         
         if not results:
             print("[WEB WORKER] No relevant web search results found.")
+            no_web_msg = "I couldn't find any relevant web results for your query."
+            updated_scratchpad = scratchpad + f"\n- [Web Worker]: {no_web_msg}"
             return {
-                "messages": [AIMessage(content="I couldn't find any relevant web results for your query.")],
-                "next_agent": "FINISH"
+                "messages": [AIMessage(content=no_web_msg, name="web_worker")],
+                "scratchpad": updated_scratchpad,
+                "worker_complete": {"web_worker": True},
+                "worker_outputs": {"web_worker": no_web_msg},
+                "worker_type": "web_worker",
+                "next_agent": "supervisor"
             }
         
         print(f"[WEB WORKER] Found {len(results)} search results. Synthesizing answer...")
@@ -67,19 +83,30 @@ def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
         model = get_reasoning_model()
         response = model.invoke([
             SystemMessage(content=WEB_SYSTEM_PROMPT),
-            HumanMessage(content=f"Search results:\n{context}\n\nQuestion: {last_user_query}\n\nSources: {sources}")
+            HumanMessage(content=f"Search results:\n{context}\n\nQuestion: {target_query}\n\nSources: {sources}")
         ])
         
         safe_response = validate_tool_output(response.content)
         print(f"[WEB WORKER] Response:\n{safe_response}")
         
+        updated_scratchpad = scratchpad + f"\n- [Web Worker]: {safe_response}"
         return {
-            "messages": [AIMessage(content=safe_response)],
-            "next_agent": "FINISH"
+            "messages": [AIMessage(content=safe_response, name="web_worker")],
+            "scratchpad": updated_scratchpad,
+            "worker_complete": {"web_worker": True},
+            "worker_outputs": {"web_worker": safe_response},
+            "worker_type": "web_worker",
+            "next_agent": "supervisor"
         }
     except Exception as e:
         logger.error(f"Web worker error: {e}")
+        err_msg = "Error searching web. Please try again."
+        updated_scratchpad = scratchpad + f"\n- [Web Worker]: {err_msg}"
         return {
-            "messages": [AIMessage(content="Error searching web. Please try again.")],
-            "next_agent": "FINISH"
+            "messages": [AIMessage(content=err_msg, name="web_worker")],
+            "scratchpad": updated_scratchpad,
+            "worker_complete": {"web_worker": True},
+            "worker_outputs": {"web_worker": err_msg},
+            "worker_type": "web_worker",
+            "next_agent": "supervisor"
         }

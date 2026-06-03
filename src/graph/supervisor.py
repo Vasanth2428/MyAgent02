@@ -1,109 +1,137 @@
 # Supervisor node for routing queries to specialized workers.
 import os
 import logging
-from typing import Literal
+from typing import Literal, List, Optional
+from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.Supervisor")
 
-SUPERVISOR_PROMPT = """You are a ROUTING-ONLY supervisor. Your ONLY job is to decide which worker handles the query.
-Do NOT answer the query yourself. Do NOT solve math. Do NOT provide information.
+SUPERVISOR_PROMPT = """You are a central planner and supervisor for a multi-agent cooperative system.
+Your job is to coordinate a team of specialized workers to solve a user's query.
 
-Available workers:
-- rag_worker: Use for questions about uploaded documents, files, or private knowledge.
-- web_worker: Use for current events, real-time info, news, or topics requiring live web data.
-- utility_worker: Use for ANY math, calculations, dates, times, formatting, or summarization.
+Available Workers:
+- rag_worker: Retrieve information from private documents only. Use for questions about uploaded files, documents, or custom knowledge base.
+- web_worker: Search the web for real-time/current information, news, or general external web search.
+- utility_worker: Perform calculations, math, date/time lookups, and basic formatting.
+- scraper_worker: Fetch and extract text content from specific URLs or links. Use this when the query or step explicitly requires reading the content of a web page.
+- critic_worker: Analyze accumulated findings, cross-reference sources, fact-check, and identify inconsistencies or gaps. Use this to critique findings before synthesis.
+- report_worker: Generate comprehensive, long-form markdown reports from the accumulated findings. Use this when the user explicitly requests a report or summary document.
 
-Rules:
-1. Output ONLY a JSON object: {"next_agent": "<worker_name>"}
-2. next_agent MUST be exactly one of: "rag_worker", "web_worker", "utility_worker", or "FINISH"
-3. Use FINISH only if the conversation already contains a complete answer.
-4. When in doubt, route to a worker rather than FINISH.
+Your duties:
+1. If the 'plan' is empty, construct a step-by-step plan (up to 3 steps) to answer the user query.
+2. If a plan exists, evaluate the 'scratchpad' findings against the plan to check progress.
+3. Determine the next step. If all research steps are resolved, check if the user requested a report/summary document. If yes, route to the report_worker (value for next_agent: 'report_worker'). If no report is needed, route to the synthesizer (value for next_agent: 'synthesizer').
+4. Otherwise, select the next appropriate worker ('rag_worker', 'web_worker', 'utility_worker', 'scraper_worker', 'critic_worker', 'report_worker') and write a specific sub-task instruction for them (e.g., "Find competitor Z's revenue", "Calculate 10% of 1000000", "Scrape competitor website").
+5. CRITICAL: If multiple steps can be executed INDEPENDENTLY (e.g., searching documents AND searching web for different info), set next_agent to 'parallel' and list them in 'parallel_tasks' as [{"worker": "rag_worker", "task": "..."}, {"worker": "web_worker", "task": "..."}].
+6. Write the updated plan, next_agent, and current_task in the JSON response.
 
-Examples:
-- User: "What does my document say about X?" -> {"next_agent": "rag_worker"}
-- User: "What is the weather today?" -> {"next_agent": "web_worker"}
-- User: "What is 2+2?" -> {"next_agent": "utility_worker"}
-- User: "What is 2+2?" -> Assistant: "Result: 4" -> {"next_agent": "FINISH"}
-- User: "What is the weather today?" -> Assistant: "The weather today is sunny." -> {"next_agent": "FINISH"}
+29. CRITICAL: If multiple steps can be executed INDEPENDENTLY (e.g., searching documents AND searching web for different info), set next_agent to 'parallel' and list them in 'parallel_tasks'.
+30. Write the updated plan, next_agent, and current_task using the provided tool schema.
 """
+
+class ParallelTask(BaseModel):
+    worker: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker"] = Field(description="The worker to execute the task")
+    task: str = Field(description="The specific task instruction")
+
+class SupervisorDecision(BaseModel):
+    plan: List[str] = Field(description="Step-by-step plan to answer the query")
+    next_agent: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "synthesizer", "parallel"] = Field(description="The next agent to route to")
+    current_task: str = Field(description="Specific instruction for the next worker", default="")
+    parallel_tasks: List[ParallelTask] = Field(description="List of tasks if next_agent is parallel", default_factory=list)
 
 
 def get_routing_model():
-    """Get the LLM model for routing (uses cheaper model via Groq)."""
+    """Get the LLM model for routing with structured output."""
     model_name = os.getenv("SUPERVISOR_MODEL", "llama-3.1-8b-instant")
     api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    model = ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    return model.with_structured_output(SupervisorDecision)
 
 
 def supervisor_node(state: dict) -> dict:
     """
-    Supervisor node that routes to appropriate worker.
-    
-    Uses structured output to force JSON with 'next_agent' field.
+    Supervisor node that constructs a plan, tracks findings, and dispatches sub-tasks.
+    Supports both sequential and parallel worker dispatch.
     """
     model = get_routing_model()
     
     messages = state.get("messages", [])
     context_notes = state.get("context_notes", [])
     steps = state.get("steps_remaining", 10)
+    plan = state.get("plan", [])
+    scratchpad = state.get("scratchpad", "")
     
     # Bounded execution loop: decrement steps
     new_steps = steps - 1
     
+    # Formulate current blackboard context
+    blackboard_context = f"""
+--- COOPERATIVE BLACKBOARD ---
+Current Plan: {plan}
+Accumulated Findings (Scratchpad):
+{scratchpad if scratchpad else "(No findings yet)"}
+------------------------------
+"""
+    
     routing_prompt = []
     routing_prompt.append(SystemMessage(content=SUPERVISOR_PROMPT))
+    routing_prompt.append(SystemMessage(content=blackboard_context))
     
-    for msg in messages:
+    # Filter worker messages only from previous turns, keeping current turn's worker messages
+    worker_names = {"rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker"}
+    last_human_index = -1
+    for i, msg in enumerate(messages):
         if isinstance(msg, dict):
+            if msg.get("role") == "user":
+                last_human_index = i
+        elif hasattr(msg, "content") and (msg.__class__.__name__ == "HumanMessage" or getattr(msg, "type", "") == "human"):
+            last_human_index = i
+
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict):
+            if i < last_human_index and msg.get("name") in worker_names:
+                continue
             if msg.get("role") == "user":
                 routing_prompt.append(HumanMessage(content=msg.get("content", "")))
             elif msg.get("role") == "assistant":
                 routing_prompt.append(AIMessage(content=msg.get("content", "")))
         else:
+            if i < last_human_index and hasattr(msg, "name") and msg.name in worker_names:
+                continue
             routing_prompt.append(msg)
-    
+            
     if context_notes:
         routing_prompt.append(SystemMessage(content=f"Additional context notes: {' '.join(context_notes)}"))
+        
+    plan_out = plan
+    next_agent = "synthesizer"
+    current_task = ""
+    parallel_tasks = []
     
     try:
-        response = model.invoke(routing_prompt)
-        content = response.content.strip() if response.content else ""
-        
-        import json
-        import re
-        json_match = re.search(r'\{.*\}', content)
-        if json_match:
-            result = json.loads(json_match.group(0))
-            next_agent = result.get("next_agent") or "FINISH"
-        else:
-            next_agent = "FINISH"
+        response: SupervisorDecision = model.invoke(routing_prompt)
+        plan_out = response.plan
+        next_agent = response.next_agent
+        current_task = response.current_task
+        parallel_tasks = [{"worker": pt.worker, "task": pt.task} for pt in response.parallel_tasks]
     except Exception as e:
-        logger.error(f"Supervisor routing error: {e}")
-        next_agent = "FINISH"
-    
-    valid_workers = ["rag_worker", "web_worker", "utility_worker", "FINISH"]
-    if next_agent not in valid_workers:
-        next_agent = "FINISH"
-    
+        logger.error(f"Supervisor routing/planning error: {e}")
+        
+    valid_agents = ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "synthesizer", "FINISH", "parallel"]
+    if next_agent not in valid_agents or next_agent == "FINISH":
+        next_agent = "synthesizer"
+        
     state_update = {
+        "plan": plan_out,
         "next_agent": next_agent,
-        "steps_remaining": new_steps
+        "current_task": current_task,
+        "steps_remaining": new_steps,
+        "parallel_tasks": parallel_tasks
     }
     
-    # If finishing, populate final_answer from the last assistant message
-    if next_agent == "FINISH":
-        last_answer = ""
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage):
-                last_answer = msg.content
-                break
-            elif isinstance(msg, dict) and msg.get("role") == "assistant":
-                last_answer = msg.get("content", "")
-                break
-        if last_answer:
-            state_update["final_answer"] = last_answer
-            
-    print(f"\n[SUPERVISOR] Routing decision: next_agent = '{next_agent}' | Steps remaining: {new_steps}")
+    print(f"\n[SUPERVISOR] Next Node: '{next_agent}' | Task: '{current_task}' | Steps Left: {new_steps}")
+    if parallel_tasks:
+        print(f"[SUPERVISOR] Parallel tasks: {parallel_tasks}")
     return state_update

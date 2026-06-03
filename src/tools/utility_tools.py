@@ -12,14 +12,14 @@ def get_current_datetime() -> str:
 
 def evaluate_math(expression: str) -> str:
     """Safely evaluate a mathematical expression."""
-    from core.tools import evaluate_math as safe_evaluate
+    from src.core.tools import evaluate_math as safe_evaluate
     return safe_evaluate(expression)
 
 
 def summarize_text(text: str, max_tokens: int = 200) -> str:
     """Summarize text to a max token limit."""
     import tiktoken
-    from core.config import TOKENIZER_ENCODING
+    from src.core.config import TOKENIZER_ENCODING
     
     tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
     tokens = tokenizer.encode(text)

@@ -1,8 +1,8 @@
 import unittest
 from datetime import datetime, timedelta
-from core.memory import ConversationMemory
-from core.config import MEMORY_TOKEN_BUDGET
-from core.engine import count_tokens
+from src.core.memory import ConversationMemory
+from src.core.config import MEMORY_TOKEN_BUDGET
+from src.core.engine import count_tokens
 
 class TestMemoryDecayStress(unittest.TestCase):
     def test_memory_budget_strictness(self):

@@ -1625,3 +1625,24 @@ main {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+/* Cooperative Parallel HUD Step Styling */
+.step-parallel-badge {
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--accent-indigo);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    margin-left: 0.4rem;
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.agent-step-card.parallel-branch.active {
+    border-color: var(--accent-indigo);
+    background: rgba(99, 102, 241, 0.02);
+}

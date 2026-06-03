@@ -18,28 +18,23 @@ def validate_db_path(path: str) -> str:
 
 
 def setup_checkpointer():
-    """Setup SqliteSaver or MemorySaver based on environment."""
-    use_sqlite = os.getenv("USE_SQLITE_CHECKPOINTER", "false").lower() == "true"
+    """Setup SqliteSaver for true persistent memory. Fails explicitly if unavailable."""
     db_path = os.getenv("CHECKPOINTER_DB_PATH", "checkpoints.db")
     db_path = validate_db_path(db_path)
     
-    if use_sqlite:
-        try:
-            from langgraph.checkpoint.sqlite import SqliteSaver
-            import sqlite3
-            
-            # Use safe directory for database
-            safe_dir = os.path.join(os.getcwd(), 'checkpoints')
-            os.makedirs(safe_dir, exist_ok=True)
-            full_path = os.path.join(safe_dir, db_path)
-            
-            conn = sqlite3.connect(full_path, check_same_thread=False)
-            saver = SqliteSaver(conn)
-            logger.info(f"Using SqliteSaver with database: {full_path}")
-            return saver
-        except ImportError as e:
-            logger.warning(f"SqliteSaver not available: {e}. Falling back to MemorySaver.")
-    
-    from langgraph.checkpoint.memory import MemorySaver
-    logger.info("Using MemorySaver for development.")
-    return MemorySaver()
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        import sqlite3
+        
+        # Use safe directory for database
+        safe_dir = os.path.join(os.getcwd(), 'checkpoints')
+        os.makedirs(safe_dir, exist_ok=True)
+        full_path = os.path.join(safe_dir, db_path)
+        
+        conn = sqlite3.connect(full_path, check_same_thread=False)
+        saver = SqliteSaver(conn)
+        logger.info(f"Using SqliteSaver with database: {full_path}")
+        return saver
+    except ImportError as e:
+        logger.error(f"FATAL: SqliteSaver not available: {e}. Persistent memory cannot be initialized.")
+        raise RuntimeError("True persistent memory requires langgraph-checkpoint-sqlite. Please install it.") from e

@@ -29,8 +29,8 @@ The Compressor is the system's 'quality filter.' When an agent retrieves documen
 | PARA-2 | 0.375 | 27 | ✅ Yes | N/A (retained) |
 | PARA-1 | 0.125 | 27 | ❌ No | Token budget exhausted |
 | PARA-3 | 0.125 | 33 | ❌ No | Token budget exhausted |
-| PARA-5 | 0.125 | 22 | ✅ Yes | N/A (retained) |
-| PARA-6 | 0.125 | 22 | ❌ No | Token budget exhausted |
+| PARA-5 | 0.125 | 22 | ❌ No | Token budget exhausted |
+| PARA-6 | 0.125 | 22 | ✅ Yes | N/A (retained) |
 
 ### Segment Contents (for reference)
 
@@ -38,8 +38,8 @@ The Compressor is the system's 'quality filter.' When an agent retrieves documen
 - **PARA-2** [✅ KEPT]: `PARA-2: The database connection string for production is jdbc:postgresql://db.in...`
 - **PARA-1** [❌ CUT]: `PARA-1: Routing protocols like OSPF use Link-State Advertisements to share topol...`
 - **PARA-3** [❌ CUT]: `PARA-3: Jupiter is the fifth planet from the Sun and the largest in the Solar Sy...`
-- **PARA-5** [✅ KEPT]: `PARA-5: The French Revolution began in 1789 and fundamentally altered the course...`
-- **PARA-6** [❌ CUT]: `PARA-6: Database indexes should be created on columns frequently used in WHERE c...`
+- **PARA-5** [❌ CUT]: `PARA-5: The French Revolution began in 1789 and fundamentally altered the course...`
+- **PARA-6** [✅ KEPT]: `PARA-6: Database indexes should be created on columns frequently used in WHERE c...`
 
 ---
 

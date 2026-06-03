@@ -3,11 +3,11 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import asyncio
 import os
 
-from core.llm import LLMService
-from core.expander import QueryExpander
-from core.hyde import HyDEGenerator
-from core.services import RetrievalService, GenerationService
-from core.engine import RAGContextEngine
+from src.core.llm import LLMService
+from src.core.expander import QueryExpander
+from src.core.hyde import HyDEGenerator
+from src.core.services import RetrievalService, GenerationService
+from src.core.engine import RAGContextEngine
 
 class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
 
@@ -35,7 +35,7 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         raw_async = AsyncMock()
         raw_async.chat.completions.create = AsyncMock(return_value=self.mock_completion)
 
-        from core.llm import RobustAsyncLLMClient
+        from src.core.llm import RobustAsyncLLMClient
         llm_service_mock = MagicMock()
         llm_service_mock.execute_with_retry_async = AsyncMock(return_value=self.mock_completion)
         client = RobustAsyncLLMClient(raw_async, llm_service_mock)
@@ -47,7 +47,7 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         raw_async = AsyncMock()
         raw_async.chat.completions.create = AsyncMock(return_value=self.mock_completion)
 
-        from core.llm import RobustAsyncLLMClient
+        from src.core.llm import RobustAsyncLLMClient
         llm_service_mock = MagicMock()
         llm_service_mock.execute_with_retry_async = AsyncMock(return_value=self.mock_completion)
         robust_async = RobustAsyncLLMClient(raw_async, llm_service_mock)
@@ -62,7 +62,7 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         raw_async = AsyncMock()
         raw_async.chat.completions.create = AsyncMock(return_value=self.mock_completion)
 
-        from core.llm import RobustAsyncLLMClient
+        from src.core.llm import RobustAsyncLLMClient
         llm_service_mock = MagicMock()
         llm_service_mock.execute_with_retry_async = AsyncMock(return_value=self.mock_completion)
         
@@ -88,7 +88,7 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         raw_async = AsyncMock()
         raw_async.chat.completions.create = AsyncMock(return_value=self.mock_completion)
 
-        from core.llm import RobustAsyncLLMClient
+        from src.core.llm import RobustAsyncLLMClient
         llm_service_mock = MagicMock()
         llm_service_mock.execute_with_retry_async = AsyncMock(return_value=self.mock_completion)
         robust_async = RobustAsyncLLMClient(raw_async, llm_service_mock)
@@ -111,7 +111,7 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result.unsupported_claims, list)
 
     async def test_async_scraper(self):
-        from core.scraper import scrape_web_page_async
+        from src.core.scraper import scrape_web_page_async
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
@@ -126,14 +126,14 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
         mock_sess.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('core.scraper._get_aiohttp_session', new=AsyncMock(return_value=mock_sess)):
+        with patch('src.core.scraper._get_aiohttp_session', new=AsyncMock(return_value=mock_sess)):
             result = await scrape_web_page_async("https://example.com")
             self.assertIn("Test content", result)
 
     async def test_async_scraper_multiple(self):
-        from core.scraper import scrape_multiple_pages_async
+        from src.core.scraper import scrape_multiple_pages_async
 
-        with patch('core.scraper.scrape_web_page_async') as mock_scrape:
+        with patch('src.core.scraper.scrape_web_page_async') as mock_scrape:
             mock_scrape.side_effect = ["result 1", "result 2", "result 3"]
             results = await scrape_multiple_pages_async(["url1", "url2", "url3"])
             self.assertEqual(results, ["result 1", "result 2", "result 3"])
@@ -142,7 +142,7 @@ class TestAsyncRAG(unittest.IsolatedAsyncioTestCase):
         mock_encoder = MagicMock()
         mock_encoder.predict.return_value = [0.8, 0.5, 0.3]
 
-        from core.reranker import NeuralReranker
+        from src.core.reranker import NeuralReranker
         reranker = NeuralReranker.__new__(NeuralReranker)
         reranker._model = mock_encoder
 

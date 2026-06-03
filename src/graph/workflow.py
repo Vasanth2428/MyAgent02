@@ -1,8 +1,10 @@
 # Build and compile the multi-agent workflow.
 import os
 import logging
+from typing import List
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Send
 
 logger = logging.getLogger("MultiAgent.Workflow")
 
@@ -11,6 +13,10 @@ from src.graph.supervisor import supervisor_node
 from src.agents.rag_worker import rag_worker_node
 from src.agents.web_worker import web_worker_node
 from src.agents.utility_worker import utility_worker_node
+from src.graph.synthesizer import synthesizer_node
+from src.agents.scraper_worker import scraper_worker_node
+from src.agents.critic_worker import critic_worker_node
+from src.agents.report_worker import report_worker_node
 
 MAX_RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "20"))
 
@@ -33,13 +39,75 @@ def route_based_on_next_agent(state: dict) -> str:
         return "web_worker_node"
     elif next_agent == "utility_worker":
         return "utility_worker_node"
+    elif next_agent == "scraper_worker":
+        return "scraper_worker_node"
+    elif next_agent == "critic_worker":
+        return "critic_worker_node"
+    elif next_agent == "report_worker":
+        return "report_worker_node"
+    elif next_agent == "synthesizer":
+        return "synthesizer_node"
+    elif next_agent == "parallel":
+        return parallel_dispatch_node(state)
     
     return END
 
 
-def decrement_steps(state: dict, worker_name: str) -> dict:
-    """Decrement steps_remaining for loop control."""
-    return {"steps_remaining": state.get("steps_remaining", 10) - 1}
+def parallel_dispatch_node(state: dict) -> List[Send]:
+    """
+    Fan-out to multiple workers in parallel for independent tasks.
+    Used when supervisor identifies tasks that can run concurrently.
+    """
+    tasks = state.get("parallel_tasks", [])
+    worker_complete = state.get("worker_complete", {})
+    worker_outputs = state.get("worker_outputs", {})
+    scratchpad = state.get("scratchpad", "")
+    
+    sends = []
+    for task in tasks:
+        worker = task.get("worker")
+        subtask = task.get("task", "")
+        if worker and worker in ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "report_worker"]:
+            sends.append(Send(f"{worker}_node", {
+                "messages": state.get("messages", []),
+                "current_task": subtask,
+                "scratchpad": scratchpad,
+                "worker_complete": worker_complete,
+                "worker_outputs": worker_outputs
+            }))
+    
+    logger.info(f"[PARALLEL DISPATCH] Dispatching {len(sends)} workers in parallel: {[s.node for s in sends]}")
+    return sends
+
+
+def aggregate_parallel_results_node(state: dict) -> dict:
+    """Merge worker outputs from state into scratchpad and return update."""
+    scratchpad = state.get("scratchpad", "") or ""
+    worker_outputs = state.get("worker_outputs", {}) or {}
+    worker_complete = state.get("worker_complete", {}) or {}
+    
+    new_scratchpad = scratchpad
+    for worker_name, output in worker_outputs.items():
+        if not output:
+            continue
+        specialist_labels = {
+            "rag_worker": "RAG Worker",
+            "web_worker": "Web Worker",
+            "utility_worker": "Utility Worker",
+            "scraper_worker": "Scraper Worker",
+            "critic_worker": "Critic Worker",
+            "report_worker": "Report Worker"
+        }
+        label = specialist_labels.get(worker_name, worker_name.replace("_", " ").title())
+        pattern = f"- [{label}]:"
+        
+        if pattern not in new_scratchpad:
+            new_scratchpad += f"\n- [{label}]: {output}"
+            
+    return {
+        "scratchpad": new_scratchpad,
+        "next_agent": "supervisor"
+    }
 
 
 def build_multi_agent_graph(checkpointer=None):
@@ -50,6 +118,11 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_node("rag_worker_node", rag_worker_node)
     workflow.add_node("web_worker_node", web_worker_node)
     workflow.add_node("utility_worker_node", utility_worker_node)
+    workflow.add_node("scraper_worker_node", scraper_worker_node)
+    workflow.add_node("critic_worker_node", critic_worker_node)
+    workflow.add_node("report_worker_node", report_worker_node)
+    workflow.add_node("synthesizer_node", synthesizer_node)
+    workflow.add_node("aggregate_parallel_results_node", aggregate_parallel_results_node)
     
     workflow.set_entry_point("supervisor_node")
     
@@ -60,13 +133,27 @@ def build_multi_agent_graph(checkpointer=None):
             "rag_worker_node": "rag_worker_node",
             "web_worker_node": "web_worker_node",
             "utility_worker_node": "utility_worker_node",
+            "scraper_worker_node": "scraper_worker_node",
+            "critic_worker_node": "critic_worker_node",
+            "report_worker_node": "report_worker_node",
+            "synthesizer_node": "synthesizer_node",
             END: END
         }
     )
     
-    workflow.add_edge("rag_worker_node", "supervisor_node")
-    workflow.add_edge("web_worker_node", "supervisor_node")
-    workflow.add_edge("utility_worker_node", "supervisor_node")
+    # Workers return to aggregator to merge parallel or sequential results
+    workflow.add_edge("rag_worker_node", "aggregate_parallel_results_node")
+    workflow.add_edge("web_worker_node", "aggregate_parallel_results_node")
+    workflow.add_edge("utility_worker_node", "aggregate_parallel_results_node")
+    workflow.add_edge("scraper_worker_node", "aggregate_parallel_results_node")
+    workflow.add_edge("critic_worker_node", "aggregate_parallel_results_node")
+    workflow.add_edge("report_worker_node", "aggregate_parallel_results_node")
+    
+    # Aggregator collects results back to supervisor
+    workflow.add_edge("aggregate_parallel_results_node", "supervisor_node")
+    
+    # Synthesizer ends the workflow
+    workflow.add_edge("synthesizer_node", END)
     
     if checkpointer is None:
         checkpointer = MemorySaver()

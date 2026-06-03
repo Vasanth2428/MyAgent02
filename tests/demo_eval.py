@@ -5,7 +5,7 @@ Demo script to show evaluation framework output
 import sys
 sys.path.insert(0, '.')
 
-from core.evaluator import GroundingVerifier
+from src.core.evaluator import GroundingVerifier
 
 print('=== GROUNDING VERIFIER DEMO ===')
 print()

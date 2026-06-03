@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.evaluator import RAGEvaluator, GroundingVerifier
-from core.benchmarks import get_all_benchmarks, RAG_BENCHMARKS
+from src.core.evaluator import RAGEvaluator, GroundingVerifier
+from src.core.benchmarks import get_all_benchmarks, RAG_BENCHMARKS
 
 
 def run_groundedness_tests():
@@ -91,7 +91,7 @@ def run_compression_evaluation():
     ]
     key_facts = ["SuperSecretAgent123", "database password"]
 
-    from core.compressor import Compressor
+    from src.core.compressor import Compressor
     compressed = Compressor.compress(docs, "password?", max_tokens=100)
     facts_preserved = sum(1 for f in key_facts if f.lower() in compressed.lower())
     total_raw_chars = sum(len(d) for d in docs)

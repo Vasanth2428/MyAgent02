@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
-from core.agent import RAGAgent
+from src.core.agent import RAGAgent
 
 
 def make_mock_completion(text: str):

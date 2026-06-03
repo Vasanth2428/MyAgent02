@@ -35,35 +35,53 @@ def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
     
     if document_tool is None:
         from src.tools.document_tool import DocumentRetrieverTool
-        from core.retriever import WeaviateRetriever
+        from src.core.retriever import WeaviateRetriever
         retriever = WeaviateRetriever()
         tool = DocumentRetrieverTool(retriever)
         document_tool = tool.search
     
-    messages = state.get("messages", [])
+    current_task = state.get("current_task", "")
+    scratchpad = state.get("scratchpad", "")
+    worker_complete = state.get("worker_complete", {})
+    worker_outputs = state.get("worker_outputs", {})
     
-    last_user_query = ""
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            last_user_query = sanitize_user_input(msg.get("content", ""))
-            break
-        elif isinstance(msg, HumanMessage):
-            last_user_query = sanitize_user_input(msg.content)
-            break
+    target_query = current_task if current_task else ""
+    if not target_query:
+        messages = state.get("messages", [])
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                target_query = sanitize_user_input(msg.get("content", ""))
+                break
+            elif isinstance(msg, HumanMessage):
+                target_query = sanitize_user_input(msg.content)
+                break
     
-    if not last_user_query:
-        return {"final_answer": "No query provided.", "next_agent": "FINISH"}
+    if not target_query:
+        return {
+            "messages": [AIMessage(content="No query provided.", name="rag_worker")],
+            "scratchpad": scratchpad,
+            "worker_complete": {"rag_worker": True},
+            "worker_outputs": {"rag_worker": "No query provided."},
+            "worker_type": "rag_worker",
+            "next_agent": "supervisor"
+        }
     
     try:
-        print(f"\n[RAG WORKER] Querying database for: '{last_user_query}'")
-        results = document_tool(last_user_query)
+        print(f"\n[RAG WORKER] Querying database for: '{target_query}'")
+        results = document_tool(target_query)
         results = truncate_results(results)
         
         if not results:
             print("[RAG WORKER] No documents found in database.")
+            no_doc_msg = "I don't know based on the provided documents."
+            updated_scratchpad = scratchpad + f"\n- [RAG Worker]: {no_doc_msg}"
             return {
-                "messages": [AIMessage(content="I don't know based on the provided documents.")],
-                "next_agent": "FINISH"
+                "messages": [AIMessage(content=no_doc_msg, name="rag_worker")],
+                "scratchpad": updated_scratchpad,
+                "worker_complete": {"rag_worker": True},
+                "worker_outputs": {"rag_worker": no_doc_msg},
+                "worker_type": "rag_worker",
+                "next_agent": "supervisor"
             }
         
         print(f"[RAG WORKER] Retrieved {len(results)} document segments. Generating final answer...")
@@ -72,19 +90,30 @@ def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
         model = get_reasoning_model()
         response = model.invoke([
             SystemMessage(content=RAG_SYSTEM_PROMPT),
-            HumanMessage(content=f"Documents:\n{context}\n\nQuestion: {last_user_query}")
+            HumanMessage(content=f"Documents:\n{context}\n\nQuestion: {target_query}")
         ])
         
         safe_response = validate_tool_output(response.content)
         print(f"[RAG WORKER] Response:\n{safe_response}")
         
+        updated_scratchpad = scratchpad + f"\n- [RAG Worker]: {safe_response}"
         return {
-            "messages": [AIMessage(content=safe_response)],
-            "next_agent": "FINISH"
+            "messages": [AIMessage(content=safe_response, name="rag_worker")],
+            "scratchpad": updated_scratchpad,
+            "worker_complete": {"rag_worker": True},
+            "worker_outputs": {"rag_worker": safe_response},
+            "worker_type": "rag_worker",
+            "next_agent": "supervisor"
         }
     except Exception as e:
         logger.error(f"RAG worker error: {e}")
+        err_msg = "Error searching documents. Please try again."
+        updated_scratchpad = scratchpad + f"\n- [RAG Worker]: {err_msg}"
         return {
-            "messages": [AIMessage(content="Error searching documents. Please try again.")],
-            "next_agent": "FINISH"
+            "messages": [AIMessage(content=err_msg, name="rag_worker")],
+            "scratchpad": updated_scratchpad,
+            "worker_complete": {"rag_worker": True},
+            "worker_outputs": {"rag_worker": err_msg},
+            "worker_type": "rag_worker",
+            "next_agent": "supervisor"
         }

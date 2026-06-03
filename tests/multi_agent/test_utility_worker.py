@@ -15,7 +15,7 @@ def test_utility_worker_math_simple():
     }
     result = utility_worker_node(state)
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"
     assert "Result: 4" in result["messages"][0].content
 
 
@@ -30,7 +30,7 @@ def test_utility_worker_math_verbal():
     }
     result = utility_worker_node(state)
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"
     # 5 + 6 * 2 = 17 (due to standard operator precedence)
     assert "Result: 17" in result["messages"][0].content
 
@@ -46,7 +46,7 @@ def test_utility_worker_datetime():
     }
     result = utility_worker_node(state)
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"
     assert "Current datetime:" in result["messages"][0].content
 
 
@@ -61,7 +61,7 @@ def test_utility_worker_summarize():
     }
     result = utility_worker_node(state)
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"
     assert "provide the text you'd like me to summarize" in result["messages"][0].content.lower()
 
 
@@ -76,7 +76,7 @@ def test_utility_worker_fallback():
     }
     result = utility_worker_node(state)
     assert "messages" in result
-    assert result["next_agent"] == "FINISH"
+    assert result["next_agent"] == "supervisor"
     assert "I can only perform calculations" in result["messages"][0].content
 
 
@@ -90,5 +90,5 @@ def test_utility_worker_empty_query():
         "final_answer": ""
     }
     result = utility_worker_node(state)
-    assert result["next_agent"] == "FINISH"
-    assert result["final_answer"] == "No query provided."
+    assert result["next_agent"] == "supervisor"
+    assert "No query provided" in result["messages"][0].content

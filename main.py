@@ -32,11 +32,11 @@ from typing import Literal, Optional
 from pypdf import PdfReader
 from dotenv import load_dotenv
 
-from core.config import CHUNK_SIZE, CHUNK_OVERLAP, PipelineConfig
-from core.retriever import WeaviateRetriever
-from core.engine import RAGContextEngine
-from core.splitter import RecursiveCharacterSplitter
-from core.scraper import close_aiohttp_session
+from src.core.config import CHUNK_SIZE, CHUNK_OVERLAP, PipelineConfig
+from src.core.retriever import WeaviateRetriever
+from src.core.engine import RAGContextEngine
+from src.core.splitter import RecursiveCharacterSplitter
+from src.core.scraper import close_aiohttp_session
 
 # Load environment variables
 load_dotenv()
@@ -105,8 +105,8 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI App
 app = FastAPI(
-    title="Premium Modular RAG API",
-    description="A high-performance Context Engine with Neural Reranking and Persistent Memory.",
+    title="Modular RAG API Prototype",
+    description="A Context Engine utilizing lightweight local embeddings (all-MiniLM-L6-v2) for rapid prototyping, featuring Neural Reranking and SQLite-based Persistent Memory.",
     lifespan=lifespan
 )
 

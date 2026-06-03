@@ -32,16 +32,25 @@ def web_search(query: str, max_results: int = 5) -> List[Dict]:
 
 
 def mock_web_search(query: str) -> List[Dict]:
-    """Mock web search when Tavily is unavailable."""
-    query_lower = query.lower()
-    if "google" in query_lower:
-        return [{"title": "Google Cloud AI", "url": "https://cloud.google.com", "content": "Google Cloud announces new AI infrastructure accelerators."}]
-    elif "nvidia" in query_lower or "nvda" in query_lower:
-        return [{"title": "NVIDIA GTC 2026", "url": "https://nvidia.com", "content": "Nvidia releases next-gen Blackwell Ultra GPU architectures."}]
-    elif "apple" in query_lower or "iphone" in query_lower:
-        return [{"title": "Apple WWDC 2026", "url": "https://apple.com", "content": "Apple announces iOS 20 with deep neural agentic capabilities."}]
-    else:
-        return [{"title": "Search Result", "url": "#", "content": f"No specific results for '{query}'. This is a mock response."}]
+    """Live web search fallback when Tavily is unavailable (using DDGS)."""
+    from duckduckgo_search import DDGS
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+            if not results:
+                return [{"title": "Search Result", "url": "#", "content": f"No specific results for '{query}'."}]
+            
+            formatted_results = []
+            for r in results:
+                formatted_results.append({
+                    "title": r.get("title", "No Title"),
+                    "url": r.get("href", "#"),
+                    "content": r.get("body", "")
+                })
+            return formatted_results
+    except Exception as e:
+        logger.error(f"DDGS search error: {e}")
+        return [{"title": "Search Error", "url": "#", "content": f"Web search failed: {e}"}]
 
 
 def format_search_results(results: List[Dict]) -> str:

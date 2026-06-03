@@ -2,8 +2,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 import asyncio
 
-from core.agent import RAGAgent
-from core.graph import RAGLangGraph, AgentState
+from src.core.agent import RAGAgent
+from src.core.graph import RAGLangGraph, AgentState
 
 class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -187,7 +187,7 @@ class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
         res = await self.graph.streaming_final_answer(state)
         self.assertTrue(any(e["event"] == "done" for e in res["events_queue"]))
 
-    @patch("core.scraper.requests.get")
+    @patch("src.core.scraper.requests.get")
     def test_scrape_web_page_success(self, mock_get):
         """Test successful fetch and parse of a web page."""
         mock_response = MagicMock()
@@ -199,14 +199,14 @@ class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
         )
         mock_get.return_value = mock_response
         
-        from core.scraper import scrape_web_page
+        from src.core.scraper import scrape_web_page
         text = scrape_web_page("http://example.com/test")
         self.assertIn("Important Header", text)
         self.assertIn("Some paragraph text here.", text)
         self.assertNotIn("Ignored Title", text)
         self.assertNotIn("alert(1)", text)
 
-    @patch("core.scraper.requests.get")
+    @patch("src.core.scraper.requests.get")
     def test_scrape_web_page_http_error(self, mock_get):
         """Test that HTTP errors are gracefully captured."""
         import requests
@@ -215,21 +215,21 @@ class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
         mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Not Found")
         mock_get.return_value = mock_response
         
-        from core.scraper import scrape_web_page
+        from src.core.scraper import scrape_web_page
         text = scrape_web_page("http://example.com/missing")
         self.assertIn("Error: HTTP request failed with status: 404.", text)
 
-    @patch("core.scraper.requests.get")
+    @patch("src.core.scraper.requests.get")
     def test_scrape_web_page_timeout(self, mock_get):
         """Test that timeouts are handled gracefully."""
         import requests
         mock_get.side_effect = requests.exceptions.Timeout("Connection timed out")
         
-        from core.scraper import scrape_web_page
+        from src.core.scraper import scrape_web_page
         text = scrape_web_page("http://example.com/timeout")
         self.assertIn("timed out", text)
 
-    @patch("core.graph.scrape_web_page")
+    @patch("src.core.graph.scrape_web_page")
     async def test_execute_tool_web_scrape(self, mock_scrape):
         """Test that execute_tool handles the web_scrape tool, runs compressor, and caches outcome."""
         mock_scrape.return_value = (
@@ -262,7 +262,7 @@ class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
 
     def test_get_current_time(self):
         """Test get_current_time returns a valid formatted date-time string."""
-        from core.tools import get_current_time
+        from src.core.tools import get_current_time
         now_str = get_current_time()
         self.assertEqual(len(now_str), 19)
         # Check standard format YYYY-MM-DD HH:MM:SS
@@ -271,7 +271,7 @@ class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
 
     def test_secure_evaluator_valid(self):
         """Test SecureEvaluator evaluates valid mathematical operations successfully."""
-        from core.tools import evaluate_math
+        from src.core.tools import evaluate_math
         self.assertEqual(evaluate_math("2 + 2"), "4")
         self.assertEqual(evaluate_math("10 * 3 - 5"), "25")
         self.assertEqual(evaluate_math("(4 + 8) / 3"), "4")
@@ -282,7 +282,7 @@ class TestLangGraphAgent(unittest.IsolatedAsyncioTestCase):
 
     def test_secure_evaluator_invalid_escapes(self):
         """Test SecureEvaluator rejects dangerous nodes like Call, Attribute, Name, etc."""
-        from core.tools import evaluate_math
+        from src.core.tools import evaluate_math
         # Rejects variable names/names
         self.assertTrue(evaluate_math("x + 1").startswith("Error:"))
         # Rejects function calls
