@@ -3,24 +3,41 @@ import json
 import time
 
 url = "http://127.0.0.1:8000/query"
-payload = {
-    "question": "Use the web search specialist to find who won the 2024 Super Bowl, then critique the findings, and finally generate a report.",
-    "session_id": "test_hardening_01",
-    "mode": "agentic"
-}
 headers = {"Content-Type": "application/json"}
 
-print("Sending query to API...", flush=True)
-start_time = time.time()
-response = requests.post(url, json=payload, headers=headers)
-print(f"Request took {time.time() - start_time:.2f} seconds", flush=True)
+# Turn 1: Kerala CM query
+payload1 = {
+    "question": "who is the chief minister of kerala",
+    "session_id": "test_hardening_session",
+    "mode": "agentic"
+}
 
+# Turn 2: Ireland PM query
+payload2 = {
+    "question": "who is the prime minister of ireland",
+    "session_id": "test_hardening_session",
+    "mode": "agentic"
+}
+
+print("--- TURN 1: Sending query 'who is the chief minister of kerala' ---", flush=True)
+start_time = time.time()
+response1 = requests.post(url, json=payload1, headers=headers)
+print(f"Turn 1 took {time.time() - start_time:.2f} seconds", flush=True)
 try:
-    data = response.json()
-    print("\nFINAL RESPONSE:")
-    print(data.get("response", "No response found"))
-    print("\nSTATS:")
-    print(json.dumps(data.get("stats", {}), indent=2))
+    data1 = response1.json()
+    print("Turn 1 Final Answer preview:", data1.get("response", "No response")[:200])
 except Exception as e:
-    print(f"Error parsing response: {e}")
-    print(response.text)
+    print(f"Error parsing response: {e}\n{response1.text}")
+
+print("\nWaiting 5 seconds for rate limit window to clear slightly...", flush=True)
+time.sleep(5)
+
+print("\n--- TURN 2: Sending query 'who is the prime minister of ireland' ---", flush=True)
+start_time = time.time()
+response2 = requests.post(url, json=payload2, headers=headers)
+print(f"Turn 2 took {time.time() - start_time:.2f} seconds", flush=True)
+try:
+    data2 = response2.json()
+    print("Turn 2 Final Answer preview:", data2.get("response", "No response")[:200])
+except Exception as e:
+    print(f"Error parsing response: {e}\n{response2.text}")

@@ -81,12 +81,24 @@ def search_code(query: str, directory: str = ".") -> str:
 @tool
 def create_files(filepath: str, content: str) -> str:
     """Create a new file with the specified content inside `./workspace`."""
-    return _create_files(filepath, content)
+    res = _create_files(filepath, content)
+    if res.startswith("Success:"):
+        try:
+            get_retrieval_service().sync_index()
+        except Exception as e:
+            logger.warning(f"Failed to sync code index after file creation: {e}")
+    return res
 
 @tool
 def modify_files(filepath: str, target_code: str, replacement_code: str) -> str:
     """Searches for the exact target_code block in the file and replaces it with replacement_code. Target code must match exactly including spaces and indentation. Works inside './workspace'."""
-    return _modify_files(filepath, target_code, replacement_code)
+    res = _modify_files(filepath, target_code, replacement_code)
+    if res.startswith("Success:"):
+        try:
+            get_retrieval_service().sync_index()
+        except Exception as e:
+            logger.warning(f"Failed to sync code index after file modification: {e}")
+    return res
 
 @tool
 def list_files(directory: str = ".") -> str:
