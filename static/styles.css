@@ -87,7 +87,7 @@ main {
 /* ---- Main Grid Layout ---- */
 .main-grid {
     display: grid;
-    grid-template-columns: 260px 200px minmax(0, 1fr) 400px;
+    grid-template-columns: 240px minmax(0, 1fr) 400px;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
@@ -96,7 +96,7 @@ main {
 
 /* Collapsed Right Sidebar state */
 .main-grid.hud-collapsed {
-    grid-template-columns: 260px 200px minmax(0, 1fr) !important;
+    grid-template-columns: 240px minmax(0, 1fr) !important;
 }
 
 .main-grid.hud-collapsed .sidebar-right {
@@ -410,16 +410,17 @@ main {
 
 /* Chat Header */
 .chat-header {
-    height: 52px;
+    height: 56px;
     padding: 0 1.5rem;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     border-bottom: 1px solid var(--border-color);
-    background: rgba(9, 9, 11, 0.75);
-    backdrop-filter: blur(12px);
+    background: rgba(15, 15, 17, 0.85);
+    backdrop-filter: blur(16px);
     z-index: 10;
     flex-shrink: 0;
+    gap: 1rem;
 }
 
 .chat-model-selector {
@@ -1519,7 +1520,7 @@ main {
 /* Responsive Media Queries */
 @media (max-width: 1200px) {
     .main-grid {
-        grid-template-columns: 260px minmax(0, 1fr) !important;
+        grid-template-columns: 240px minmax(0, 1fr) !important;
     }
     
     .sidebar-right {
@@ -1527,8 +1528,7 @@ main {
     }
     
     .main-grid.hud-visible {
-        grid-template-columns: 260px minmax(0, 1fr) !important;
-        position: relative;
+        grid-template-columns: 240px minmax(0, 1fr) !important;
     }
     
     .main-grid.hud-visible .sidebar-right {
@@ -1549,7 +1549,7 @@ main {
         grid-template-columns: minmax(0, 1fr) !important;
     }
     
-    .sidebar-left {
+    .conversations-sidebar {
         display: none !important;
     }
 }
@@ -1832,3 +1832,337 @@ main {
     outline: none;
     font-family: var(--font-sans);
 }
+
+/* ================================================================
+   NEW TOP NAVBAR & DRAG OVERLAY STYLES
+   ================================================================ */
+
+/* Header Left: Brand section */
+.header-left {
+    display: flex;
+    align-items: center;
+}
+
+.brand-section-mini {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.brand-section-mini .logo-dot {
+    width: 7px;
+    height: 7px;
+    background: var(--accent-indigo);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--accent-indigo);
+}
+
+.brand-section-mini .brand-title {
+    font-family: var(--font-brand);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--text-primary);
+}
+
+.brand-section-mini .brand-version {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--accent-indigo);
+    background: rgba(99, 102, 241, 0.08);
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(99, 102, 241, 0.12);
+}
+
+/* Header Center: Custom Dropdown Mode Selector */
+.header-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+}
+
+.mode-dropdown-container {
+    position: relative;
+    user-select: none;
+}
+
+.mode-dropdown-btn {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    padding: 0.45rem 1rem;
+    border-radius: var(--radius-pill);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.mode-dropdown-btn:hover {
+    background: var(--bg-surface-hover);
+    border-color: rgba(255, 255, 255, 0.15);
+    transform: translateY(-1px);
+}
+
+.mode-dropdown-btn .chevron-icon {
+    width: 12px;
+    height: 12px;
+    color: var(--text-secondary);
+    transition: transform var(--transition-fast);
+}
+
+.mode-dropdown-container.open .mode-dropdown-btn .chevron-icon {
+    transform: rotate(180deg);
+}
+
+.mode-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) translateY(-10px) scale(0.96);
+    background: #121214;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    width: 290px;
+    padding: 0.5rem;
+    z-index: 150;
+    opacity: 0;
+    pointer-events: none;
+    transition: transform var(--transition-normal), opacity var(--transition-normal);
+}
+
+.mode-dropdown-container.open .mode-dropdown-menu {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.mode-dropdown-item {
+    display: flex;
+    flex-direction: column;
+    padding: 0.6rem 0.85rem;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    border: 1px solid transparent;
+}
+
+.mode-dropdown-item:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.mode-dropdown-item.active {
+    background: rgba(99, 102, 241, 0.06);
+    border-color: rgba(99, 102, 241, 0.2);
+}
+
+.mode-item-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.mode-dropdown-item.active .mode-item-title {
+    color: var(--accent-indigo);
+}
+
+.mode-item-desc {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-top: 1px;
+    line-height: 1.3;
+}
+
+/* Header Right: Session context & Action buttons */
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+}
+
+.session-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.sess-badge {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    padding: 0.3rem 0.75rem;
+    border-radius: var(--radius-pill);
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.sess-badge .doc-icon {
+    width: 12px;
+    height: 12px;
+    color: var(--accent-cyan);
+}
+
+.sess-badge .glow-value {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* Upload Button and feedback popup */
+.upload-badge-wrapper {
+    position: relative;
+}
+
+.navbar-action-btn {
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    padding: 0.4rem 0.85rem;
+    border-radius: var(--radius-pill);
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent-indigo);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.navbar-action-btn:hover {
+    background: rgba(99, 102, 241, 0.18);
+    border-color: var(--accent-indigo);
+    transform: translateY(-1px);
+}
+
+.upload-btn-icon {
+    width: 13px;
+    height: 13px;
+}
+
+.upload-feedback-popup {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    white-space: nowrap;
+    display: none;
+    animation: fade-in 0.2s ease-out;
+    z-index: 100;
+}
+
+.upload-feedback-popup.uploading {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+}
+
+.upload-feedback-popup.success {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--accent-emerald);
+    border-color: rgba(16, 185, 129, 0.25);
+}
+
+.upload-feedback-popup.error {
+    background: rgba(244, 63, 94, 0.1);
+    color: var(--accent-rose);
+    border-color: rgba(244, 63, 94, 0.25);
+}
+
+/* Core online status indicator */
+.header-right .status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.65rem;
+    font-family: var(--font-sans);
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border-color);
+    padding: 0.35rem 0.7rem;
+    border-radius: var(--radius-pill);
+}
+
+/* Developer HUD Icon Button */
+.hud-toggle-icon-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.hud-toggle-icon-btn:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+    border-color: rgba(255,255,255,0.15);
+    transform: scale(1.05);
+}
+
+.hud-toggle-icon-btn.hud-hidden-state {
+    opacity: 0.6;
+}
+
+.hud-toggle-icon-btn .hud-icon {
+    width: 14px;
+    height: 14px;
+}
+
+/* Full-page drag and drop overlay */
+.file-drag-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(9, 9, 11, 0.85);
+    backdrop-filter: blur(8px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition-normal);
+}
+
+.file-drag-overlay.drag-active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.drag-overlay-content {
+    text-align: center;
+    padding: 3rem 4rem;
+    border: 2px dashed rgba(99, 102, 241, 0.4);
+    border-radius: var(--radius-lg);
+    background: var(--bg-surface);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    transform: scale(0.95);
+    transition: transform var(--transition-normal);
+}
+
+.file-drag-overlay.drag-active .drag-overlay-content {
+    transform: scale(1);
+}
+

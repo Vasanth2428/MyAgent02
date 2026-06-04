@@ -10,98 +10,20 @@
     <link rel="stylesheet" href="/static/styles.css?v=2.3.0">
 </head>
 <body>
+    <!-- Full-page Drag & Drop Overlay -->
+    <div id="file-drag-overlay" class="file-drag-overlay">
+        <div class="drag-overlay-content">
+            <svg class="upload-large-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 48px; height: 48px; color: var(--accent-indigo); margin-bottom: 1rem;">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <h3 style="font-family: var(--font-brand); color: #fff; margin-bottom: 0.5rem;">Drag & Drop to Index Knowledge</h3>
+            <p style="font-size: 0.8rem; color: var(--text-secondary);">Upload PDF/TXT files up to 20MB</p>
+        </div>
+    </div>
+
     <div class="main-grid">
-        <!-- LEFT SIDEBAR: BRAND, SETTINGS, UPLOAD & STATUS -->
-        <aside class="sidebar-left">
-            <div class="brand-section">
-                <div class="logo-group">
-                    <span class="logo-dot"></span>
-                    <h1 class="brand-title">RAG_ORCHESTRATOR</h1>
-                </div>
-                <span class="brand-version">v2.2.0</span>
-            </div>
-
-            <div class="sidebar-scroll-content">
-                <!-- SESSION INFO -->
-                <div class="sidebar-group">
-                    <div class="group-label">Session Context</div>
-                    <div class="session-info-card">
-                        <div class="info-row">
-                            <span class="info-key">Session ID</span>
-                            <span id="session-tag" class="info-val">SID: ...</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-key">Indexed Docs</span>
-                            <span id="knowledge-count" class="info-val glow-value">0</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- PROCESSING MODE -->
-                <div class="sidebar-group">
-                    <div class="group-label">Pipeline Execution Mode</div>
-                    <div class="mode-selector">
-                        <div class="mode-stack">
-                            <label class="mode-btn-wrapper">
-                                <input type="radio" name="engine-mode" value="context_engine" checked>
-                                <span class="mode-custom-btn">
-                                    <span class="mode-title">Advanced Pipeline</span>
-                                    <span class="mode-desc">Hybrid search, re-ranking & overflow recovery</span>
-                                </span>
-                            </label>
-                            <label class="mode-btn-wrapper">
-                                <input type="radio" name="engine-mode" value="normal">
-                                <span class="mode-custom-btn">
-                                    <span class="mode-title">Simple RAG</span>
-                                    <span class="mode-desc">Standard semantic retriever & prompt</span>
-                                </span>
-                            </label>
-                            <label class="mode-btn-wrapper">
-                                <input type="radio" name="engine-mode" value="agentic">
-                                <span class="mode-custom-btn">
-                                    <span class="mode-title">Cooperative Multi-Agent</span>
-                                    <span class="mode-desc">Supervisor-orchestrated workers with fanned-out parallel execution & critic auditing</span>
-                                </span>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- INJECT DOCUMENT -->
-                <div class="sidebar-group">
-                    <div class="group-label">Inject Knowledge Source</div>
-                    <div class="upload-container">
-                        <div id="drop-area" class="upload-area">
-                            <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="17 8 12 3 7 8"/>
-                                <line x1="12" y1="3" x2="12" y2="15"/>
-                            </svg>
-                            <span class="upload-text">Upload Document</span>
-                            <span class="upload-subtext">PDF/TXT files up to 20MB</span>
-                        </div>
-                        <input type="file" id="file-in" accept=".pdf,.txt" style="display: none;">
-                        <div id="up-msg" class="upload-feedback"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- SIDEBAR FOOTER -->
-            <div class="sidebar-footer">
-                <div class="status-indicator">
-                    <span class="status-dot online"></span>
-                    <span class="status-text">CORE: <strong class="text-online">ONLINE</strong></span>
-                </div>
-                <button type="button" id="hud-toggle-btn" class="hud-toggle-btn" title="Toggle System HUD">
-                    <svg class="hud-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                        <line x1="9" y1="3" x2="9" y2="21"/>
-                    </svg>
-                    <span>Developer HUD</span>
-                </button>
-            </div>
-        </aside>
-
         <!-- CONVERSATION SIDEBAR -->
         <aside class="conversations-sidebar" id="conversations-sidebar">
             <div class="conv-header">
@@ -120,17 +42,98 @@
 
 
         <main class="chat-container">
-            <!-- CHAT HEADER -->
+            <!-- CHAT HEADER (TOP NAVBAR) -->
             <header class="chat-header">
+                <!-- Left Brand Section -->
+                <div class="header-left">
+                    <div class="brand-section-mini">
+                        <span class="logo-dot"></span>
+                        <span class="brand-title">RAG_ORCHESTRATOR</span>
+                        <span class="brand-version">v2.2.0</span>
+                    </div>
+                </div>
+
+                <!-- Center Mode Selector Custom Dropdown -->
                 <div class="header-center">
-                    <span class="chat-model-selector">
-                        <svg class="model-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-                            <polyline points="2 17 12 22 22 17"/>
-                            <polyline points="2 12 12 17 22 12"/>
+                    <div class="mode-dropdown-container">
+                        <button type="button" id="mode-dropdown-btn" class="mode-dropdown-btn" aria-haspopup="listbox" aria-expanded="false">
+                            <svg class="model-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                                <polyline points="2 17 12 22 22 17"/>
+                                <polyline points="2 12 12 17 22 12"/>
+                            </svg>
+                            <span id="active-mode-badge" class="model-name">ADVANCED PIPELINE</span>
+                            <svg class="chevron-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6 9 12 15 18 9"/>
+                            </svg>
+                        </button>
+                        <div class="mode-dropdown-menu" id="mode-dropdown-menu" role="listbox">
+                            <div class="mode-dropdown-item active" data-value="context_engine" role="option">
+                                <div class="mode-item-title">Advanced Pipeline</div>
+                                <div class="mode-item-desc">Hybrid search, re-ranking & overflow recovery</div>
+                            </div>
+                            <div class="mode-dropdown-item" data-value="normal" role="option">
+                                <div class="mode-item-title">Simple RAG</div>
+                                <div class="mode-item-desc">Standard semantic retriever & prompt</div>
+                            </div>
+                            <div class="mode-dropdown-item" data-value="agentic" role="option">
+                                <div class="mode-item-title">Cooperative Multi-Agent</div>
+                                <div class="mode-item-desc">Supervisor-orchestrated planning & routing</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Hidden inputs to maintain compatibility with app.js -->
+                    <div style="display: none;">
+                        <input type="radio" name="engine-mode" value="context_engine" id="mode-context_engine-radio" checked>
+                        <input type="radio" name="engine-mode" value="normal" id="mode-normal-radio">
+                        <input type="radio" name="engine-mode" value="agentic" id="mode-agentic-radio">
+                    </div>
+                </div>
+
+                <!-- Right Actions and Info Section -->
+                <div class="header-right">
+                    <!-- Session Stats Badges -->
+                    <div class="session-badges">
+                        <span class="sess-badge" id="session-tag" title="Session Context ID">SID: ...</span>
+                        <span class="sess-badge docs-badge" title="Indexed Documents">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="doc-icon">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/>
+                                <line x1="16" y1="13" x2="8" y2="13"/>
+                                <line x1="16" y1="17" x2="8" y2="17"/>
+                            </svg>
+                            <span id="knowledge-count" class="glow-value">0</span>
+                        </span>
+                    </div>
+
+                    <!-- Knowledge Uploader Action -->
+                    <div class="upload-badge-wrapper">
+                        <button type="button" id="navbar-upload-btn" class="navbar-action-btn" title="Inject Knowledge Source">
+                            <svg class="upload-btn-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                            <span>Upload</span>
+                        </button>
+                        <input type="file" id="file-in" accept=".pdf,.txt" style="display: none;">
+                        <div id="up-msg" class="upload-feedback-popup"></div>
+                    </div>
+
+                    <!-- Core Status -->
+                    <div class="status-indicator">
+                        <span class="status-dot online"></span>
+                        <span class="status-text">CORE: <strong class="text-online">ONLINE</strong></span>
+                    </div>
+
+                    <!-- Developer HUD Toggle -->
+                    <button type="button" id="hud-toggle-btn" class="hud-toggle-icon-btn" title="Toggle Developer HUD">
+                        <svg class="hud-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="9" y1="3" x2="9" y2="21"/>
                         </svg>
-                        <span id="active-mode-badge" class="model-name">CONTEXT ENGINE</span>
-                    </span>
+                    </button>
                 </div>
             </header>
 
@@ -249,20 +252,20 @@
                                     <span class="stat-key">ACTIVE MEMORIES</span>
                                 </div>
                                 <div class="stat-box">
-                                    <span id="stat-cpu" class="stat-val">0%</span>
-                                    <span class="stat-key">HOST CPU USAGE</span>
+                                    <span id="stat-cost" class="stat-val">$0.00</span>
+                                    <span class="stat-key">QUERY COST (USD)</span>
                                 </div>
                                 <div class="stat-box">
-                                    <span id="stat-ram" class="stat-val">0%</span>
-                                    <span class="stat-key">HOST RAM USAGE</span>
+                                    <span id="stat-grounding" class="stat-val">0.000</span>
+                                    <span class="stat-key">GROUNDING SCORE</span>
                                 </div>
                                 <div class="stat-box">
-                                    <span id="stat-ctx" class="stat-val">0%</span>
-                                    <span class="stat-key">PROMPT WINDOW</span>
+                                    <span id="stat-hits" class="stat-val">0</span>
+                                    <span class="stat-key">RETRIEVED HITS</span>
                                 </div>
                                 <div class="stat-box">
-                                    <span id="stat-tps" class="stat-val">0 t/s</span>
-                                    <span class="stat-key">LLM SPEED</span>
+                                    <span id="stat-overflows" class="stat-val">0</span>
+                                    <span class="stat-key">OVERFLOW TRIGGERS</span>
                                 </div>
                             </div>
                         </div>

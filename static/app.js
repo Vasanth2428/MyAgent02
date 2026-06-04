@@ -21,14 +21,14 @@ const knowledgeCount        = document.getElementById('knowledge-count');
 const activeModeBadge       = document.getElementById('active-mode-badge');
 
 // Stats Panel
-const statQ    = document.getElementById('stat-q');
-const statC    = document.getElementById('stat-c');
-const statT    = document.getElementById('stat-t');
-const statM    = document.getElementById('stat-m');
-const statCpu  = document.getElementById('stat-cpu');
-const statRam  = document.getElementById('stat-ram');
-const statCtx  = document.getElementById('stat-ctx');
-const statTps  = document.getElementById('stat-tps');
+const statQ         = document.getElementById('stat-q');
+const statC         = document.getElementById('stat-c');
+const statT         = document.getElementById('stat-t');
+const statM         = document.getElementById('stat-m');
+const statCost      = document.getElementById('stat-cost');
+const statGrounding = document.getElementById('stat-grounding');
+const statHits      = document.getElementById('stat-hits');
+const statOverflows = document.getElementById('stat-overflows');
 
 // Budget Controls
 const contextLimitSlider      = document.getElementById('context-limit-slider');
@@ -59,6 +59,7 @@ if (sessionTag) sessionTag.textContent = `SID: ${sid}`;
 let contextLimit = parseInt(contextLimitSlider.value);
 let abortController = null;
 let isInParallelMode = false;
+let sessionOverflows = 0;
 
 // ---- Explicit App State Model ----
 const AppState = {
@@ -93,6 +94,45 @@ document.querySelectorAll('input[name="engine-mode"]').forEach(radio => {
         }
     });
 });
+
+// ---- Custom Dropdown Mode Selector ----
+const modeDropdownContainer = document.querySelector('.mode-dropdown-container');
+const modeDropdownBtn = document.getElementById('mode-dropdown-btn');
+const modeDropdownItems = document.querySelectorAll('.mode-dropdown-item');
+
+if (modeDropdownBtn && modeDropdownContainer) {
+    modeDropdownBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        modeDropdownContainer.classList.toggle('open');
+        const isOpen = modeDropdownContainer.classList.contains('open');
+        modeDropdownBtn.setAttribute('aria-expanded', isOpen);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (modeDropdownContainer && !modeDropdownContainer.contains(e.target)) {
+            modeDropdownContainer.classList.remove('open');
+            modeDropdownBtn.setAttribute('aria-expanded', 'false');
+        }
+    });
+
+    modeDropdownItems.forEach(item => {
+        item.addEventListener('click', () => {
+            const modeVal = item.dataset.value;
+            const targetRadio = document.getElementById(`mode-${modeVal}-radio`);
+            if (targetRadio) {
+                targetRadio.checked = true;
+                targetRadio.dispatchEvent(new Event('change'));
+            }
+
+            // Sync active visual class
+            modeDropdownItems.forEach(i => i.classList.remove('active'));
+            item.classList.add('active');
+
+            modeDropdownContainer.classList.remove('open');
+            modeDropdownBtn.setAttribute('aria-expanded', 'false');
+        });
+    });
+}
 
 // ---- Slider & Preset Listeners ----
 contextLimitSlider.addEventListener('input', (() => {
@@ -486,6 +526,13 @@ form.addEventListener('submit', async (e) => {
     input.style.height = 'auto'; // Reset textarea height on submit
     addMsg(query, 'user');
     
+    // Auto-title from the first message
+    setTimeout(() => {
+        if (typeof ConversationManager !== 'undefined') {
+            ConversationManager.autoTitleFromFirstMessage(query);
+        }
+    }, 600);
+    
     const mode = document.querySelector('input[name="engine-mode"]:checked').value;
     activeModeBadge.textContent = mode === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : mode.replace('_', ' ').toUpperCase();
     isInParallelMode = false; // Reset parallel tracking state
@@ -515,6 +562,64 @@ form.addEventListener('submit', async (e) => {
     let inlineThinkingDetails = null;
     let thinkingStart = null;
 
+    // Streaming rendering & Throttled scheduler state
+    let accumulatedText = "";
+    let lastRenderTime = 0;
+    let renderThrottleTimeout = null;
+    let streamTextContainer = null;
+
+    const maybeScrollToBottom = () => {
+        const threshold = 100;
+        const isNearBottom = chatWindow.scrollHeight - chatWindow.scrollTop - chatWindow.clientHeight <= threshold;
+        if (isNearBottom) {
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+    };
+
+    const updateStreamUI = (isFinal = false) => {
+        if (isFinal) {
+            if (renderThrottleTimeout) {
+                clearTimeout(renderThrottleTimeout);
+                renderThrottleTimeout = null;
+            }
+            try {
+                bodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(accumulatedText) : accumulatedText;
+            } catch (e) {
+                bodyContainer.textContent = accumulatedText;
+            }
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            return;
+        }
+
+        // Ensure stream text node container exists
+        if (!streamTextContainer) {
+            streamTextContainer = document.createElement('span');
+            streamTextContainer.className = 'raw-text-stream';
+            bodyContainer.innerHTML = '';
+            bodyContainer.appendChild(streamTextContainer);
+        }
+
+        const now = Date.now();
+        const renderInterval = 80; // 80ms throttle (approx 12fps)
+
+        const performRender = () => {
+            streamTextContainer.textContent = accumulatedText;
+            maybeScrollToBottom();
+            lastRenderTime = Date.now();
+            renderThrottleTimeout = null;
+        };
+
+        if (now - lastRenderTime >= renderInterval) {
+            if (renderThrottleTimeout) {
+                clearTimeout(renderThrottleTimeout);
+                renderThrottleTimeout = null;
+            }
+            performRender();
+        } else if (!renderThrottleTimeout) {
+            renderThrottleTimeout = setTimeout(performRender, renderInterval - (now - lastRenderTime));
+        }
+    };
+
     const controller = new AbortController();
     AppState.setGenerating(true, controller);
     const startTime = Date.now();
@@ -527,7 +632,6 @@ form.addEventListener('submit', async (e) => {
     chatWindow.scrollTop = chatWindow.scrollHeight;
     
     const bodyContainer = aiBubble.querySelector('.msg-body');
-    let accumulatedText = "";
 
     try {
         const response = await fetch(`${API_BASE}/query_stream`, {
@@ -657,6 +761,10 @@ form.addEventListener('submit', async (e) => {
                     }
                 }
                  else if (data.event === "overflow_detected") {
+                     // Increment overflow counter
+                     sessionOverflows++;
+                     if (statOverflows) statOverflows.textContent = sessionOverflows;
+
                      // Trigger visual warning alerts
                      overflowIndicatorDot.className = 'indicator-dot breached';
                      overflowAlertBanner.className = 'overflow-banner alert-breached';
@@ -710,17 +818,13 @@ form.addEventListener('submit', async (e) => {
                          inlineThinkingDetails = null;
                      }
                      accumulatedText += data.text;
-                     try {
-                         bodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(accumulatedText) : accumulatedText;
-                     } catch (e) {
-                         bodyContainer.textContent = accumulatedText;
-                     }
-                     chatWindow.scrollTop = chatWindow.scrollHeight;
+                     updateStreamUI(false);
                  }
                  else if (data.event === "error") {
                      throw new Error(data.message);
                  }
                  else if (data.event === "done") {
+                     updateStreamUI(true);
                      const latency = Date.now() - startTime;
                      addLog(`Processing complete: ${latency}ms`, 'SUCCESS');
                      bodyContainer.classList.remove('typing-cursor');
@@ -790,26 +894,37 @@ form.addEventListener('submit', async (e) => {
                      }
                      statT.textContent = latency + 'ms';
                      statM.textContent = stats.active_memories || 0;
-                     if (stats.cpu_usage_percent !== undefined)    statCpu.textContent = stats.cpu_usage_percent + '%';
-                     if (stats.memory_usage_percent !== undefined) statRam.textContent = stats.memory_usage_percent + '%';
-                     if (stats.context_used_percent !== undefined)  statCtx.textContent = stats.context_used_percent + '%';
-                     if (stats.exact_tokens) {
-                         const totalTokens = stats.exact_tokens.total;
-                         const durationSec = latency / 1000.0;
-                         statTps.textContent = Math.round(stats.exact_tokens.completion / durationSec) + ' t/s';
-                     }
+
+                     // Update new RAG metrics in HUD
+                     const calculatedCost = stats.query_cost || (stats.exact_tokens ? `$${((stats.exact_tokens.prompt * 0.000001) + (stats.exact_tokens.completion * 0.000002)).toFixed(6)}` : "$0.00");
+                     if (statCost) statCost.textContent = calculatedCost;
+
+                     const calculatedGrounding = stats.grounding_score !== undefined ? stats.grounding_score.toFixed(3) : "0.000";
+                     if (statGrounding) statGrounding.textContent = calculatedGrounding;
+
+                     const retrievedCount = stats.retrieved_context ? stats.retrieved_context.length : 0;
+                     if (statHits) statHits.textContent = retrievedCount;
+
+                     if (statOverflows) statOverflows.textContent = sessionOverflows;
+
+                     const calculatedTps = stats.exact_tokens ? Math.round(stats.exact_tokens.completion / (latency / 1000.0)) + ' t/s' : '0 t/s';
 
                      // Render Glass Box Inspector
                      const finalData = {
                          query: query,
-                         tps: statTps.textContent,
-                         query_cost: stats.query_cost || (stats.exact_tokens ? `$${((stats.exact_tokens.prompt * 0.000001) + (stats.exact_tokens.completion * 0.000002)).toFixed(6)}` : "$0.00"),
+                         tps: calculatedTps,
+                         query_cost: calculatedCost,
                          search_queries: (stats.instantaneous_latency_ms && stats.instantaneous_latency_ms.search_queries) ? stats.instantaneous_latency_ms.search_queries : [query],
                          hyde_doc: stats.hyde_doc || "N/A",
                          raw_prompt: stats.raw_prompt || "N/A",
                          stats: stats
                      };
                      renderInspector(finalData);
+
+                     // Refresh session list to update message count and timestamp
+                     if (typeof ConversationManager !== 'undefined') {
+                         ConversationManager.loadSessions();
+                     }
                  }
             }
         }
@@ -945,7 +1060,7 @@ telemetryModal.addEventListener('click', (e) => {
 });
 
 // ---- File Upload API ----
-document.getElementById('drop-area').addEventListener('click', () => document.getElementById('file-in').click());
+document.getElementById('navbar-upload-btn').addEventListener('click', () => document.getElementById('file-in').click());
 document.getElementById('file-in').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -996,8 +1111,6 @@ async function refreshGlobalStats() {
         if (data.document_count !== undefined) {
             knowledgeCount.textContent = data.document_count;
         }
-        if (data.cpu_usage_percent !== undefined)      statCpu.textContent = Math.round(data.cpu_usage_percent) + '%';
-        if (data.memory_usage_percent !== undefined)   statRam.textContent = Math.round(data.memory_usage_percent) + '%';
     } catch (e) {}
 }
 
@@ -1047,7 +1160,33 @@ function removeSkeleton() {
 }
 
 // Initializers
-setInterval(refreshGlobalStats, 15000);
+let statsInterval = null;
+
+function startStatsPolling() {
+    if (!statsInterval) {
+        statsInterval = setInterval(refreshGlobalStats, 15000);
+    }
+}
+
+function stopStatsPolling() {
+    if (statsInterval) {
+        clearInterval(statsInterval);
+        statsInterval = null;
+    }
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        stopStatsPolling();
+        addLog("Tab hidden. Suspending stats polling.", "SYSTEM");
+    } else {
+        startStatsPolling();
+        refreshGlobalStats();
+        addLog("Tab visible. Resumed stats polling.", "SYSTEM");
+    }
+});
+
+startStatsPolling();
 refreshGlobalStats();
 loadHistory();
 AppState.updateContextLimit(parseInt(contextLimitSlider.value));
@@ -1059,12 +1198,7 @@ const mainGrid = document.querySelector('.main-grid');
 if (hudToggleBtn && mainGrid) {
     // Helper to update button label text without losing the SVG icon
     const updateButtonLabel = (visibleOrCollapsed, textVal) => {
-        const label = hudToggleBtn.querySelector('span');
-        if (label) {
-            label.textContent = textVal;
-        } else {
-            hudToggleBtn.innerHTML = `<span>${textVal}</span>`;
-        }
+        hudToggleBtn.title = textVal;
     };
 
     // Determine initial state based on window width
@@ -1123,27 +1257,39 @@ if (scrollBottomFab && chatWindow) {
 }
 
 // ---- Drag & Drop File Upload ----
-const dropArea = document.getElementById('drop-area');
+const fileDragOverlay = document.getElementById('file-drag-overlay');
 const fileInput = document.getElementById('file-in');
 
-if (dropArea) {
-    ['dragenter', 'dragover'].forEach(evt => {
-        dropArea.addEventListener(evt, (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropArea.classList.add('drag-over');
-        });
+if (fileDragOverlay) {
+    let dragCounter = 0;
+
+    window.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter++;
+        fileDragOverlay.classList.add('drag-active');
     });
 
-    ['dragleave', 'drop'].forEach(evt => {
-        dropArea.addEventListener(evt, (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropArea.classList.remove('drag-over');
-        });
+    window.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter--;
+        if (dragCounter === 0) {
+            fileDragOverlay.classList.remove('drag-active');
+        }
     });
 
-    dropArea.addEventListener('drop', (e) => {
+    window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    });
+
+    window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter = 0;
+        fileDragOverlay.classList.remove('drag-active');
+
         const files = e.dataTransfer.files;
         if (files.length > 0) {
             const file = files[0];
@@ -1275,25 +1421,6 @@ const ConversationManager = (() => {
                 </div>
             `;
 
-            // Switch session on click (ignore clicks on action buttons)
-            item.addEventListener('click', (e) => {
-                if (e.target.closest('.conv-action-btn')) return;
-                if (session.session_id === sid) return;
-                switchSession(session.session_id);
-            });
-
-            // Rename
-            item.querySelector('.rename-btn').addEventListener('click', (e) => {
-                e.stopPropagation();
-                startInlineRename(item, session);
-            });
-
-            // Delete
-            item.querySelector('.delete-btn').addEventListener('click', (e) => {
-                e.stopPropagation();
-                deleteSession(session.session_id, item);
-            });
-
             convList.appendChild(item);
         });
     }
@@ -1321,14 +1448,24 @@ const ConversationManager = (() => {
         if (chatWindow) {
             chatWindow.innerHTML = '<div id="chat-skeleton" class="chat-skeleton" style="display:none"></div>';
         }
+        
+        // Reset stats
+        sessionOverflows = 0;
+        if (statOverflows) statOverflows.textContent = '0';
+        if (statCost) statCost.textContent = '$0.00';
+        if (statGrounding) statGrounding.textContent = '0.000';
+        if (statHits) statHits.textContent = '0';
+        if (statT) statT.textContent = '0ms';
+        if (statM) statM.textContent = '0';
+
         try {
             const res  = await fetch(`${API_BASE}/history/${newSid}`);
             const hist = await res.json();
             hist.forEach(entry => {
                 if (entry.role === 'user') {
-                    appendMessage('user', entry.text);
+                    addMsg(entry.text, 'user');
                 } else if (entry.role === 'assistant') {
-                    appendMessage('assistant', entry.text);
+                    addMsg(entry.text, 'ai', entry.telemetry);
                 }
             });
             if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -1351,6 +1488,16 @@ const ConversationManager = (() => {
             if (chatWindow) {
                 chatWindow.innerHTML = '<div id="chat-skeleton" class="chat-skeleton" style="display:none"></div>';
             }
+            
+            // Reset stats
+            sessionOverflows = 0;
+            if (statOverflows) statOverflows.textContent = '0';
+            if (statCost) statCost.textContent = '$0.00';
+            if (statGrounding) statGrounding.textContent = '0.000';
+            if (statHits) statHits.textContent = '0';
+            if (statT) statT.textContent = '0ms';
+            if (statM) statM.textContent = '0';
+
             await loadSessions();
             // Focus input
             if (input) input.focus();
@@ -1417,7 +1564,11 @@ const ConversationManager = (() => {
     async function deleteSession(delSid, item) {
         if (!confirm(`Delete this conversation? This cannot be undone.`)) return;
         try {
-            await fetch(`${API_BASE}/sessions/${delSid}`, { method: 'DELETE' });
+            const res = await fetch(`${API_BASE}/sessions/${delSid}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || `Server responded with status ${res.status}`);
+            }
             item.remove();
             // If we deleted the active session, create a new one
             if (delSid === sid) {
@@ -1427,14 +1578,41 @@ const ConversationManager = (() => {
             if (!convList.querySelector('.conv-item')) {
                 if (convEmpty) convEmpty.style.display = 'block';
             }
+            showToast("Conversation deleted successfully", "success");
         } catch (e) {
             console.error('Delete failed:', e);
+            showToast(`✗ Delete failed: ${e.message}`, "error");
         }
     }
 
     // ---- wire up new chat button ----
     if (newChatBtn) {
         newChatBtn.addEventListener('click', createNewChat);
+    }
+
+    // ---- event delegation for conversation items ----
+    if (convList) {
+        convList.addEventListener('click', (e) => {
+            const renameBtn = e.target.closest('.rename-btn');
+            const deleteBtn = e.target.closest('.delete-btn');
+            const item = e.target.closest('.conv-item');
+            
+            if (!item) return;
+            const itemSid = item.dataset.sid;
+            
+            if (renameBtn) {
+                e.stopPropagation();
+                const titleVal = item.querySelector('.conv-title').textContent;
+                startInlineRename(item, { session_id: itemSid, title: titleVal });
+            } else if (deleteBtn) {
+                e.stopPropagation();
+                deleteSession(itemSid, item);
+            } else {
+                if (itemSid !== sid) {
+                    switchSession(itemSid);
+                }
+            }
+        });
     }
 
     // ---- init: ensure current session is registered ----
@@ -1455,22 +1633,4 @@ const ConversationManager = (() => {
     return { loadSessions, autoTitleFromFirstMessage };
 })();
 
-// ---- Hook autoTitle into the form submit ----
-// We intercept after the first message is sent
-const _originalFormSubmit = form ? form.onsubmit : null;
-if (form) {
-    const origListener = form._convHooked;
-    if (!origListener) {
-        form._convHooked = true;
-        form.addEventListener('submit', async (e) => {
-            const question = input ? input.value.trim() : '';
-            if (question) {
-                // Let the original submit handler run first (it's on the same event)
-                // then auto-title this session from the first message
-                setTimeout(() => ConversationManager.autoTitleFromFirstMessage(question), 600);
-                // Refresh sidebar after response
-                setTimeout(() => ConversationManager.loadSessions(), 3000);
-            }
-        });
-    }
-}
+// Title auto-setting is handled directly inside the form submit listener.

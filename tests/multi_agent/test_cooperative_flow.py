@@ -120,8 +120,12 @@ def test_supervisor_planning_output():
         "steps_remaining": 10
     }
     
-    mock_llm_response = Mock()
-    mock_llm_response.content = '{"plan": ["Find revenue", "Compute tax"], "next_agent": "rag_worker", "current_task": "Retrieve company revenue"}'
+    from src.graph.supervisor import SupervisorDecision
+    mock_llm_response = SupervisorDecision(
+        plan=["Find revenue", "Compute tax"],
+        next_agent="rag_worker",
+        current_task="Retrieve company revenue"
+    )
     
     with patch("src.graph.supervisor.get_routing_model") as mock_get_model:
         mock_model = Mock()

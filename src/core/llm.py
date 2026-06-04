@@ -78,6 +78,42 @@ class RobustAsyncCompletions:
         return getattr(self.raw_completions, name)
 
 
+def parse_rate_limit_delay(e) -> Optional[float]:
+    """Parse retry delay in seconds from RateLimitError headers or messages."""
+    import re
+    # 1. Check response headers
+    if hasattr(e, "response") and e.response is not None:
+        headers = getattr(e.response, "headers", {})
+        # Check standard Retry-After
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after:
+            try:
+                return float(retry_after) + 0.5
+            except ValueError:
+                pass
+        
+        # Check Groq token/request reset limits
+        for h_key in ["x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"]:
+            val = headers.get(h_key)
+            if val:
+                try:
+                    clean = str(val).lower().rstrip("s")
+                    return float(clean) + 0.5
+                except ValueError:
+                    pass
+                    
+    # 2. Parse from message string (fallback)
+    msg = str(e)
+    match = re.search(r"try again in (\d+(\.\d+)?)s?", msg, re.IGNORECASE)
+    if match:
+        try:
+            return float(match.group(1)) + 0.5
+        except ValueError:
+            pass
+            
+    return None
+
+
 class LLMService:
     """Centralized connection to the Groq AI language model."""
 
@@ -97,10 +133,17 @@ class LLMService:
 
     def execute_with_retry(self, func, *args, **kwargs):
         def is_llm_transient(e):
+            is_t = False
             if isinstance(e, (groq.RateLimitError, groq.APIConnectionError, groq.InternalServerError, groq.APITimeoutError)):
+                is_t = True
+            elif hasattr(e, "status_code"):
+                is_t = e.status_code == 429 or (e.status_code and e.status_code >= 500)
+            
+            if is_t:
+                delay = parse_rate_limit_delay(e)
+                if delay is not None:
+                    return True, delay
                 return True
-            if hasattr(e, "status_code"):
-                return e.status_code == 429 or (e.status_code and e.status_code >= 500)
             return False
 
         wrapped = retry(
@@ -114,10 +157,17 @@ class LLMService:
 
     async def execute_with_retry_async(self, func, *args, **kwargs):
         def is_llm_transient(e):
+            is_t = False
             if isinstance(e, (groq.RateLimitError, groq.APIConnectionError, groq.InternalServerError, groq.APITimeoutError)):
+                is_t = True
+            elif hasattr(e, "status_code"):
+                is_t = e.status_code == 429 or (e.status_code and e.status_code >= 500)
+            
+            if is_t:
+                delay = parse_rate_limit_delay(e)
+                if delay is not None:
+                    return True, delay
                 return True
-            if hasattr(e, "status_code"):
-                return e.status_code == 429 or (e.status_code and e.status_code >= 500)
             return False
 
         wrapped = retry(

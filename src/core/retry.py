@@ -63,8 +63,13 @@ def retry(
                     except error_types as e:
                         # Determine transience
                         is_transient = True
+                        custom_delay = None
                         if is_transient_fn is not None:
-                            is_transient = is_transient_fn(e)
+                            res = is_transient_fn(e)
+                            if isinstance(res, tuple) and len(res) == 2:
+                                is_transient, custom_delay = res
+                            else:
+                                is_transient = res
                         
                         if not is_transient or attempt == retries:
                             local_logger.error(
@@ -73,17 +78,19 @@ def retry(
                             )
                             raise e
                         
-                        # Calculate delay with backoff
-                        delay = backoff * (2 ** (attempt - 1))
-                        
-                        # Apply jitter
-                        if isinstance(jitter, bool):
-                            if jitter:
-                                delay += random.uniform(0, 0.1 * delay)
-                        elif isinstance(jitter, (int, float)):
-                            delay += random.uniform(0, jitter)
-                        elif isinstance(jitter, tuple) and len(jitter) == 2:
-                            delay += random.uniform(jitter[0], jitter[1])
+                        # Calculate delay
+                        if custom_delay is not None:
+                            delay = custom_delay
+                        else:
+                            delay = backoff * (2 ** (attempt - 1))
+                            # Apply jitter
+                            if isinstance(jitter, bool):
+                                if jitter:
+                                    delay += random.uniform(0, 0.1 * delay)
+                            elif isinstance(jitter, (int, float)):
+                                delay += random.uniform(0, jitter)
+                            elif isinstance(jitter, tuple) and len(jitter) == 2:
+                                delay += random.uniform(jitter[0], jitter[1])
                         
                         local_logger.warning(
                             f"Async operation {func_name} failed with {type(e).__name__}: {e}. "
@@ -105,8 +112,13 @@ def retry(
                     except error_types as e:
                         # Determine transience
                         is_transient = True
+                        custom_delay = None
                         if is_transient_fn is not None:
-                            is_transient = is_transient_fn(e)
+                            res = is_transient_fn(e)
+                            if isinstance(res, tuple) and len(res) == 2:
+                                is_transient, custom_delay = res
+                            else:
+                                is_transient = res
                         
                         if not is_transient or attempt == retries:
                             local_logger.error(
@@ -115,17 +127,19 @@ def retry(
                             )
                             raise e
                         
-                        # Calculate delay with backoff
-                        delay = backoff * (2 ** (attempt - 1))
-                        
-                        # Apply jitter
-                        if isinstance(jitter, bool):
-                            if jitter:
-                                delay += random.uniform(0, 0.1 * delay)
-                        elif isinstance(jitter, (int, float)):
-                            delay += random.uniform(0, jitter)
-                        elif isinstance(jitter, tuple) and len(jitter) == 2:
-                            delay += random.uniform(jitter[0], jitter[1])
+                        # Calculate delay
+                        if custom_delay is not None:
+                            delay = custom_delay
+                        else:
+                            delay = backoff * (2 ** (attempt - 1))
+                            # Apply jitter
+                            if isinstance(jitter, bool):
+                                if jitter:
+                                    delay += random.uniform(0, 0.1 * delay)
+                            elif isinstance(jitter, (int, float)):
+                                delay += random.uniform(0, jitter)
+                            elif isinstance(jitter, tuple) and len(jitter) == 2:
+                                delay += random.uniform(jitter[0], jitter[1])
                         
                         local_logger.warning(
                             f"Operation {func_name} failed with {type(e).__name__}: {e}. "

@@ -23,8 +23,9 @@ print(f"DEBUG: sys.executable = {sys.executable}", flush=True)
 print(f"DEBUG: sentence-transformers = {sentence_transformers.__version__}", flush=True)
 print(f"DEBUG: transformers = {transformers.__version__}", flush=True)
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -82,14 +83,38 @@ async def lifespan(app: FastAPI):
         retriever = WeaviateRetriever()
         pipeline_config = PipelineConfig.from_env()
         logger.info(f"Pipeline config: hyde={pipeline_config.enable_hyde}, expansion={pipeline_config.enable_expansion}, reranking={pipeline_config.enable_reranking}, compression={pipeline_config.enable_compression}")
-        rag = RAGContextEngine(retriever, pipeline_config)
-        logger.info("RAG Engine successfully initialized.")
-        try:
-            summary = rag.registry.get_registry_summary()
-            logger.info(f"Knowledge Registry Summary: Datasets={summary['datasets']}, Domains={summary['domains']}, Total Docs={summary['total_documents_count']}")
-        except Exception as reg_err:
-            logger.warning(f"Could not load Knowledge Registry summary on startup: {reg_err}")
-        yield
+        
+        # Setup safe checkpoints folder path
+        import os
+        safe_dir = os.path.join(os.getcwd(), 'checkpoints')
+        os.makedirs(safe_dir, exist_ok=True)
+        db_path = os.getenv("CHECKPOINTER_DB_PATH", "checkpoints.db")
+        from src.graph.checkpointer import validate_db_path
+        db_path = validate_db_path(db_path)
+        full_path = os.path.join(safe_dir, db_path)
+        
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        
+        logger.info(f"Using AsyncSqliteSaver with database: {full_path}")
+        async with AsyncSqliteSaver.from_conn_string(full_path) as checkpointer:
+            await checkpointer.setup()
+            
+            # Pre-warm heavy ML models to eliminate first-query latency spikes
+            logger.info("Pre-warming local embedding and reranker models...")
+            _ = retriever.embedding_model
+            from src.core.reranker import _get_cross_encoder
+            _ = _get_cross_encoder()
+            logger.info("Heavy ML models successfully pre-warmed.")
+            
+            rag = RAGContextEngine(retriever, pipeline_config, checkpointer=checkpointer)
+            logger.info("RAG Engine successfully initialized.")
+            try:
+                summary = rag.registry.get_registry_summary()
+                logger.info(f"Knowledge Registry Summary: Datasets={summary['datasets']}, Domains={summary['domains']}, Total Docs={summary['total_documents_count']}")
+            except Exception as reg_err:
+                logger.warning(f"Could not load Knowledge Registry summary on startup: {reg_err}")
+            
+            yield
     except Exception as e:
         logger.error(f"Critical error during startup: {e}")
         traceback.print_exc()
@@ -120,10 +145,23 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Serve static assets (CSS, JS)
+# Enable Gzip compression for payloads > 1024 bytes
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# Custom static files class with caching headers
+class CachedStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith((".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
+        return response
+
+# Serve static assets (CSS, JS) with caching headers
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
 
 
 # ------------------------------------------------------------------
@@ -153,6 +191,11 @@ class RenameSessionRequest(BaseModel):
 # ------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
 
 @app.get("/")
 async def serve_ui():
@@ -315,7 +358,7 @@ async def delete_session(session_id: str):
     """Deletes a session and all its conversation history."""
     if not rag:
         raise HTTPException(status_code=500, detail="Engine not ready")
-    rag.persistent_memory.delete_session(session_id)
+    rag.delete_session(session_id)
     return None
 
 

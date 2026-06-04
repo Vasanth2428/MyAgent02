@@ -17,6 +17,7 @@ from src.graph.synthesizer import synthesizer_node
 from src.agents.scraper_worker import scraper_worker_node
 from src.agents.critic_worker import critic_worker_node
 from src.agents.report_worker import report_worker_node
+from src.agents.coding_worker import coding_worker_node
 
 MAX_RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "20"))
 
@@ -45,8 +46,12 @@ def route_based_on_next_agent(state: dict) -> str:
         return "critic_worker_node"
     elif next_agent == "report_worker":
         return "report_worker_node"
+    elif next_agent == "coding_worker":
+        return "coding_worker_node"
     elif next_agent == "synthesizer":
         return "synthesizer_node"
+    return END
+
 def aggregate_parallel_results_node(state: dict) -> dict:
     """Merge worker outputs from state into scratchpad and return update."""
     scratchpad = state.get("scratchpad", "") or ""
@@ -63,7 +68,8 @@ def aggregate_parallel_results_node(state: dict) -> dict:
             "utility_worker": "Utility Worker",
             "scraper_worker": "Scraper Worker",
             "critic_worker": "Critic Worker",
-            "report_worker": "Report Worker"
+            "report_worker": "Report Worker",
+            "coding_worker": "Coding Worker"
         }
         label = specialist_labels.get(worker_name, worker_name.replace("_", " ").title())
         pattern = f"- [{label}]:"
@@ -88,6 +94,7 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_node("scraper_worker_node", scraper_worker_node)
     workflow.add_node("critic_worker_node", critic_worker_node)
     workflow.add_node("report_worker_node", report_worker_node)
+    workflow.add_node("coding_worker_node", coding_worker_node)
     workflow.add_node("synthesizer_node", synthesizer_node)
     workflow.add_node("aggregate_parallel_results_node", aggregate_parallel_results_node)
     
@@ -103,6 +110,7 @@ def build_multi_agent_graph(checkpointer=None):
             "scraper_worker_node": "scraper_worker_node",
             "critic_worker_node": "critic_worker_node",
             "report_worker_node": "report_worker_node",
+            "coding_worker_node": "coding_worker_node",
             "synthesizer_node": "synthesizer_node",
             END: END
         }
@@ -115,6 +123,7 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_edge("scraper_worker_node", "aggregate_parallel_results_node")
     workflow.add_edge("critic_worker_node", "aggregate_parallel_results_node")
     workflow.add_edge("report_worker_node", "aggregate_parallel_results_node")
+    workflow.add_edge("coding_worker_node", "aggregate_parallel_results_node")
     
     # Aggregator collects results back to supervisor
     workflow.add_edge("aggregate_parallel_results_node", "supervisor_node")

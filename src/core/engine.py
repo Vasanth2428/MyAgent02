@@ -58,7 +58,7 @@ class RAGContextEngine:
     happening at once for better performance).
     """
 
-    def __init__(self, retriever: WeaviateRetriever, pipeline_config: Optional[PipelineConfig] = None):
+    def __init__(self, retriever: WeaviateRetriever, pipeline_config: Optional[PipelineConfig] = None, checkpointer: Optional[any] = None):
         self.retriever = retriever
         self.pipeline_config = pipeline_config or PipelineConfig()
         self.persistent_memory = PersistentMemoryStore()
@@ -84,8 +84,11 @@ class RAGContextEngine:
 
         # Initialize Multi-Agent Graph
         from src.graph.workflow import build_multi_agent_graph
-        from src.graph.checkpointer import setup_checkpointer
-        self.multi_agent_checkpointer = setup_checkpointer()
+        if checkpointer is not None:
+            self.multi_agent_checkpointer = checkpointer
+        else:
+            from src.graph.checkpointer import setup_checkpointer
+            self.multi_agent_checkpointer = setup_checkpointer()
         self.multi_agent_graph = build_multi_agent_graph(self.multi_agent_checkpointer)
 
     # ------------------------------------------------------------------
@@ -95,6 +98,36 @@ class RAGContextEngine:
     def get_memory(self, session_id: str):
         """Retrieves memory for a session."""
         return self.memory_service.get_memory(session_id)
+
+    def delete_session(self, session_id: str) -> None:
+        """Deletes a session's history from memory.db and its checkpoints from checkpoints.db."""
+        logger.info(f"Deleting session history and checkpoints for session: {session_id}")
+        self.persistent_memory.delete_session(session_id)
+        self._clear_session_checkpoints(session_id)
+
+    def _clear_session_checkpoints(self, session_id: str):
+        """Clears all LangGraph checkpoints for the given session ID from the SQLite checkpointer database."""
+        import os
+        import sqlite3
+        from src.graph.checkpointer import validate_db_path
+        
+        db_path = os.getenv("CHECKPOINTER_DB_PATH", "checkpoints.db")
+        db_path = validate_db_path(db_path)
+        safe_dir = os.path.join(os.getcwd(), 'checkpoints')
+        full_path = os.path.join(safe_dir, db_path)
+        
+        if not os.path.exists(full_path):
+            return
+            
+        try:
+            with sqlite3.connect(full_path, timeout=10.0) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+                conn.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
+                conn.commit()
+                logger.info(f"Cleared checkpoints for thread {session_id} from {full_path}")
+        except Exception as e:
+            logger.error(f"Error clearing checkpoints for session {session_id}: {e}")
 
     def save_memory(self, session_id: str, text: str, role: str, importance: float = 1.0, telemetry: dict = None):
         """Saves a turn to active memory and database."""
@@ -450,12 +483,20 @@ class RAGContextEngine:
                 raw_context = raw_context[:SAFETY_CHAR_LIMIT] + "... [TRUNCATED]"
 
             latencies['phase_3_reranking_ms'] = 0.0
-            latencies['phase_4_memory_sync_ms'] = 0.0
+            
+            t = time.time()
+            logger.info("[P4: MEMORY] Synchronizing history for Simple RAG...")
+            memory_text = memory.get_active_context()
+            memory_tokens = count_tokens(memory_text)
+            latencies['phase_4_memory_sync_ms'] = round((time.time() - t) * 1000, 2)
+            
             latencies['phase_5_compression_ms'] = 0.0
 
+            final_context = f"### MEMORY\n{memory_text}\n\n### KNOWLEDGE\n{raw_context}"
+
             return (
-                "### KNOWLEDGE\n" + raw_context, "N/A", "N/A", 1.0,
-                0, count_tokens(raw_context), TOTAL_CONTEXT_BUDGET, 0.0
+                final_context, memory_text, "N/A", 1.0,
+                memory_tokens, count_tokens(raw_context), TOTAL_CONTEXT_BUDGET, 0.0
             )
 
     async def _phase_generate_async(self, query: str, final_context: str, latencies: dict, context_chunks: List[str] = None):
@@ -563,15 +604,32 @@ class RAGContextEngine:
          
         # Multi-Agent Mode Execution
         if mode == "agentic":
-            from langchain_core.messages import HumanMessage
+            # Clear checkpoints in checkpoints.db for this session to avoid duplication/stale state
+            self._clear_session_checkpoints(session_id)
+
+            from langchain_core.messages import HumanMessage, AIMessage
             from src.graph.workflow import get_graph_config
             import time as time_module
             
             t_start = time_module.time()
             config = get_graph_config(session_id)
             
+            # Fetch history from memory.db
+            memory_history = self.persistent_memory.get_history(session_id)
+            messages = []
+            for entry in memory_history:
+                role = entry.get("role")
+                text = entry.get("text")
+                if role == "user":
+                    messages.append(HumanMessage(content=text))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=text))
+            
+            # Append the current query
+            messages.append(HumanMessage(content=query))
+
             initial_state = {
-                "messages": [HumanMessage(content=query)],
+                "messages": messages,
                 "next_agent": "supervisor",
                 "context_notes": [],
                 "steps_remaining": 10,
@@ -584,7 +642,10 @@ class RAGContextEngine:
                 "parallel_tasks": []
             }
             
-            result = await asyncio.to_thread(self.multi_agent_graph.invoke, initial_state, config=config)
+            if hasattr(self.multi_agent_checkpointer, "aget_tuple"):
+                result = await self.multi_agent_graph.ainvoke(initial_state, config=config)
+            else:
+                result = await asyncio.to_thread(self.multi_agent_graph.invoke, initial_state, config=config)
             final_answer = result.get("final_answer", "")
             if not final_answer and result.get("messages"):
                 final_answer = result["messages"][-1].content
@@ -774,7 +835,10 @@ class RAGContextEngine:
         }
 
     async def _run_multi_agent_stream_async(self, query: str, session_id: str, source_filter: Optional[str] = None, context_limit: Optional[int] = None) -> AsyncGenerator[Dict, None]:
-        from langchain_core.messages import HumanMessage
+        # Clear checkpoints in checkpoints.db for this session to avoid duplication/stale state
+        self._clear_session_checkpoints(session_id)
+
+        from langchain_core.messages import HumanMessage, AIMessage
         from src.graph.workflow import get_graph_config
         import time as time_module
         import psutil
@@ -783,8 +847,22 @@ class RAGContextEngine:
         
         config = get_graph_config(session_id)
         
+        # Fetch history from memory.db
+        memory_history = self.persistent_memory.get_history(session_id)
+        messages = []
+        for entry in memory_history:
+            role = entry.get("role")
+            text = entry.get("text")
+            if role == "user":
+                messages.append(HumanMessage(content=text))
+            elif role == "assistant":
+                messages.append(AIMessage(content=text))
+        
+        # Append the current query
+        messages.append(HumanMessage(content=query))
+
         initial_state = {
-            "messages": [HumanMessage(content=query)],
+            "messages": messages,
             "next_agent": "supervisor",
             "context_notes": [],
             "steps_remaining": 10,
@@ -806,8 +884,16 @@ class RAGContextEngine:
         t_start = time_module.time()
         yield {"event": "state_change", "state": "WAITING_FOR_REASONING"}
         
+        async def get_stream():
+            if hasattr(self.multi_agent_checkpointer, "aget_tuple"):
+                async for ev in self.multi_agent_graph.astream(initial_state, config=config):
+                    yield ev
+            else:
+                for ev in self.multi_agent_graph.stream(initial_state, config=config):
+                    yield ev
+
         try:
-            async for event in self.multi_agent_graph.astream(initial_state, config=config):
+            async for event in get_stream():
                 for node_name, state_delta in event.items():
                     yield {"event": "node_start", "node": node_name}
                     

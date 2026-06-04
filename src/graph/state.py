@@ -11,22 +11,28 @@ except ImportError:
 
 
 def merge_dict(existing: dict, new: dict) -> dict:
+    if new is None:
+        return existing or {}
+    if not new:  # Check for empty dict {}
+        return {}
     if not existing:
         return new or {}
-    if not new:
-        return existing or {}
     return {**existing, **new}
 
 
 def merge_next_agent(existing: str, new: str) -> str:
-    return new or existing
+    if new is None:
+        return existing or ""
+    return new
 
 
 def merge_scratchpad(existing: str, new: str) -> str:
+    if new is None:
+        return existing or ""
+    if new == "":
+        return ""
     if not existing:
         return new or ""
-    if not new:
-        return existing or ""
     existing_lines = [line.strip() for line in existing.split("\n") if line.strip()]
     new_lines = [line.strip() for line in new.split("\n") if line.strip()]
     
@@ -36,6 +42,7 @@ def merge_scratchpad(existing: str, new: str) -> str:
             merged_lines.append(line)
             
     return "\n".join(merged_lines)
+
 
 
 class ContextEngineState(TypedDict):

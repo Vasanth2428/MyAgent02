@@ -41,21 +41,48 @@ def synthesizer_node(state: dict) -> dict:
             
     # Retrieve original user query from messages (in reverse to get the latest intent)
     original_query = ""
-    for msg in reversed(clean_messages):
+    last_human_idx = -1
+    for i, msg in enumerate(clean_messages):
         if isinstance(msg, dict):
             if msg.get("role") == "user":
-                original_query = msg.get("content", "")
-                break
+                last_human_idx = i
         elif hasattr(msg, "content") and (msg.__class__.__name__ == "HumanMessage" or getattr(msg, "type", "") == "human"):
-            original_query = msg.content
-            break
-            
-    if not original_query and clean_messages:
-        # Fallback to the text of the latest message
+            last_human_idx = i
+
+    if last_human_idx != -1:
+        msg = clean_messages[last_human_idx]
+        original_query = msg.get("content", "") if isinstance(msg, dict) else msg.content
+    elif clean_messages:
         last_msg = clean_messages[-1]
         original_query = last_msg.get("content", "") if isinstance(last_msg, dict) else getattr(last_msg, "content", "")
+
+    # Format previous conversation history (excluding the current user query)
+    chat_history_parts = []
+    for idx, msg in enumerate(clean_messages):
+        if idx == last_human_idx:
+            continue
         
-    synthesis_prompt = f"""You are an expert assistant. Your job is to construct a direct, coherent, and comprehensive response to the user's original query by synthesizing the findings gathered by your specialized team of workers.
+        role = ""
+        content = ""
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            content = msg.get("content", "")
+        else:
+            content = msg.content
+            if msg.__class__.__name__ == "HumanMessage" or getattr(msg, "type", "") == "human":
+                role = "user"
+            elif msg.__class__.__name__ == "AIMessage" or getattr(msg, "type", "") == "ai":
+                role = "assistant"
+        
+        if role and content:
+            chat_history_parts.append(f"[{role}]: {content}")
+            
+    chat_history_str = "\n".join(chat_history_parts) if chat_history_parts else "(No previous messages)"
+        
+    synthesis_prompt = f"""You are an expert assistant. Your job is to construct a direct, coherent, and comprehensive response to the user's original query by synthesizing the findings gathered by your specialized team of workers, taking into account the conversation history.
+
+Conversation History:
+{chat_history_str}
 
 User Original Query:
 "{original_query}"

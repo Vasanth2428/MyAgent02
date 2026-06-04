@@ -16,6 +16,7 @@ import uuid
 import logging
 import time
 import random
+import threading
 import weaviate
 import weaviate.classes as wvc
 from weaviate.classes.init import Auth
@@ -42,8 +43,21 @@ class WeaviateRetriever:
     so we can find similar content later. It supports both meaning-based search (vector)
     and exact keyword search.
     """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super(WeaviateRetriever, cls).__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self):
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
         self.url = os.getenv("WEAVIATE_URL")
         self.api_key = os.getenv("WEAVIATE_API_KEY")
         self.client = None
