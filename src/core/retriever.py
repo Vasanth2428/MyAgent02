@@ -20,7 +20,7 @@ import threading
 import weaviate
 import weaviate.classes as wvc
 from weaviate.classes.init import Auth
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import weaviate.exceptions
 
 from src.core.config import EMBEDDING_MODEL, HYBRID_ALPHA_DEFAULT, HYBRID_ALPHA_KEYWORD
@@ -91,12 +91,14 @@ class WeaviateRetriever:
             self._connected = False
             logger.warning("Starting in degraded mode - database operations will fail gracefully.")
 
+        self.code_collection = None
+
         if self.client and self._connected:
             if not self.client.collections.exists("RAGKnowledge"):
                 logger.info("Initializing 'RAGKnowledge' collection...")
                 self.client.collections.create(
                     name="RAGKnowledge",
-                    vector_config=wvc.config.Configure.Vectorizer.none(),
+                    vector_config=wvc.config.Configure.Vectors.self_provided(),
                     properties=[
                         wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="tags", data_type=wvc.config.DataType.TEXT_ARRAY),
@@ -107,7 +109,25 @@ class WeaviateRetriever:
                     ]
                 )
 
+            if not self.client.collections.exists("RAGCode"):
+                logger.info("Initializing 'RAGCode' collection...")
+                self.client.collections.create(
+                    name="RAGCode",
+                    vector_config=wvc.config.Configure.Vectors.self_provided(),
+                    properties=[
+                        wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="symbol_name", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="symbol_type", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="filepath", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="start_line", data_type=wvc.config.DataType.NUMBER),
+                        wvc.config.Property(name="end_line", data_type=wvc.config.DataType.NUMBER),
+                        wvc.config.Property(name="source", data_type=wvc.config.DataType.TEXT),
+                        wvc.config.Property(name="upload_timestamp", data_type=wvc.config.DataType.NUMBER),
+                    ]
+                )
+
             self.collection = self.client.collections.get("RAGKnowledge")
+            self.code_collection = self.client.collections.get("RAGCode")
 
         self.alpha = HYBRID_ALPHA_DEFAULT
 
@@ -289,6 +309,72 @@ class WeaviateRetriever:
             return self.execute_with_retry(_aggregate)
         except Exception:
             return 0
+
+    def add_code_chunks(self, chunks: List[Dict[str, Any]]) -> List[str]:
+        """
+        Indexes code chunks into Weaviate.
+        """
+        if not self._connected or not self.client or not self.code_collection:
+            logger.warning("Weaviate not connected - skipping code indexing.")
+            return []
+
+        texts = [chunk["text"] for chunk in chunks]
+        embeddings = self.embedding_model.encode(texts)
+        doc_upload_time = time.time()
+
+        indexed_uuids = []
+        def _batch_insert():
+            with self.code_collection.batch.dynamic() as batch:
+                for i, chunk in enumerate(chunks):
+                    # Deterministic UUID based on content path and text
+                    chunk_id = f"{chunk['filepath']}_{chunk.get('symbol_name', '')}_{i}"
+                    doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id)
+                    indexed_uuids.append(str(doc_id))
+
+                    properties = {
+                        "text": chunk["text"],
+                        "symbol_name": chunk.get("symbol_name") or "",
+                        "symbol_type": chunk.get("symbol_type") or "",
+                        "filepath": chunk["filepath"],
+                        "start_line": int(chunk.get("start_line", 1)),
+                        "end_line": int(chunk.get("end_line", 1)),
+                        "source": chunk.get("source") or "repo",
+                        "upload_timestamp": doc_upload_time,
+                    }
+                    batch.add_object(
+                        properties=properties,
+                        vector=embeddings[i].tolist(),
+                        uuid=doc_id
+                    )
+        self.execute_with_retry(_batch_insert)
+        return indexed_uuids
+
+    def search_code_chunks(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Searches the RAGCode collection using hybrid search.
+        """
+        if not self._connected or not self.client or not self.code_collection:
+            return []
+
+        query_vector = self.embedding_model.encode([query])[0].tolist()
+        def _query_db():
+            return self.code_collection.query.hybrid(
+                query=query,
+                vector=query_vector,
+                alpha=HYBRID_ALPHA_DEFAULT,
+                limit=limit,
+                return_properties=["text", "symbol_name", "symbol_type", "filepath", "start_line", "end_line", "source"]
+            )
+        response = self.execute_with_retry(_query_db)
+        return [{
+            "text": obj.properties["text"],
+            "symbol_name": obj.properties.get("symbol_name"),
+            "symbol_type": obj.properties.get("symbol_type"),
+            "filepath": obj.properties.get("filepath"),
+            "start_line": obj.properties.get("start_line"),
+            "end_line": obj.properties.get("end_line"),
+            "source": obj.properties.get("source"),
+        } for obj in response.objects]
 
     def close(self):
         """Safely terminates the connection to Weaviate Cloud."""

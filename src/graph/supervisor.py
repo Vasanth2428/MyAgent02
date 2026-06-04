@@ -19,18 +19,19 @@ Available Workers:
 - critic_worker: Analyze accumulated findings, cross-reference sources, fact-check, and identify inconsistencies or gaps. Use this to critique findings before synthesis.
 - report_worker: Generate comprehensive, long-form markdown reports from the accumulated findings. Use this when the user explicitly requests a report or summary document.
 - coding_worker: Write, modify, execute, debug, and verify code files in the workspace. Use this when the query requires writing code, creating scripts, editing source files, or running build/test commands.
+- code_critic_worker: Validate the correctness of the code and patch diffs proposed by the coding_worker, auditing against the repository AST symbol database.
 
 Your duties:
 1. If the 'plan' is empty, construct a step-by-step plan (up to 3 steps) to answer the user query.
 2. If a plan exists, evaluate the 'scratchpad' findings against the plan to check progress.
 3. Determine the next step. If all research steps are resolved, check if the user requested a report/summary document. If yes, route to the report_worker (value for next_agent: 'report_worker'). If no report is needed, route to the synthesizer (value for next_agent: 'synthesizer').
-4. Otherwise, select the next appropriate worker ('rag_worker', 'web_worker', 'utility_worker', 'scraper_worker', 'critic_worker', 'report_worker', 'coding_worker') and write a specific sub-task instruction for them (e.g., "Find competitor Z's revenue", "Calculate 10% of 1000000", "Write a python script calculate_tax.py", "Run pytest to verify the function").
+4. Otherwise, select the next appropriate worker ('rag_worker', 'web_worker', 'utility_worker', 'scraper_worker', 'critic_worker', 'report_worker', 'coding_worker', 'code_critic_worker') and write a specific sub-task instruction for them (e.g., "Find competitor Z's revenue", "Calculate 10% of 1000000", "Write a python script quicksort.py", "Audit the patch diff for quicksort.py", "Run pytest to verify").
 5. Write the updated plan, next_agent, and current_task in the JSON response.
 """
 
 class SupervisorDecision(BaseModel):
     plan: List[str] = Field(description="Step-by-step plan to answer the query")
-    next_agent: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "coding_worker", "synthesizer"] = Field(description="The next agent to route to")
+    next_agent: Literal["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "coding_worker", "code_critic_worker", "synthesizer"] = Field(description="The next agent to route to")
     current_task: str = Field(description="Specific instruction for the next worker", default="")
 
 
@@ -110,7 +111,7 @@ Accumulated Findings (Scratchpad):
     except Exception as e:
         logger.error(f"Supervisor routing/planning error: {e}")
         
-    valid_agents = ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "coding_worker", "synthesizer", "FINISH"]
+    valid_agents = ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "coding_worker", "code_critic_worker", "synthesizer", "FINISH"]
     if next_agent not in valid_agents or next_agent == "FINISH":
         next_agent = "synthesizer"
         
