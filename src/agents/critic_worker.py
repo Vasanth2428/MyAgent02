@@ -4,6 +4,8 @@ import logging
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 
+from src.core.config import CRITIC_MODEL_PRIMARY, CRITIC_MODEL_FALLBACK
+
 logger = logging.getLogger("MultiAgent.CriticWorker")
 
 CRITIC_SYSTEM_PROMPT = """You are a Fact-Checking & Critic Specialist.
@@ -20,9 +22,11 @@ Your duties:
 
 def get_reasoning_model():
     """Get the LLM model for complex reasoning via Groq."""
-    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
-    api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    validation_key = os.getenv("GROQ_VALIDATION_KEY")
+    api_key = validation_key or os.getenv("AGENT_API_KEY")
+    primary = ChatGroq(model=CRITIC_MODEL_PRIMARY, temperature=0, api_key=api_key)
+    fallback = ChatGroq(model=CRITIC_MODEL_FALLBACK, temperature=0, api_key=api_key)
+    return primary.with_fallbacks([fallback])
 
 
 def critic_worker_node(state: dict) -> dict:

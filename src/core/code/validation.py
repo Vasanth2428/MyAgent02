@@ -10,6 +10,9 @@ def validate_syntax(code_content: str, filename: str) -> Tuple[bool, str]:
     Compiles Python code content in-memory to ensure syntax correctness.
     """
     logger.info(f"Validating syntax for: {filename}")
+    if not filename.lower().endswith(".py"):
+        logger.info(f"Skipping Python compilation syntax check for non-Python file: {filename}")
+        return True, "Skipping compilation check for non-Python file."
     try:
         compile(code_content, filename, "exec")
         return True, "Syntax compilation successful."

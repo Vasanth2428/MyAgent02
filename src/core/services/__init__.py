@@ -7,6 +7,7 @@ Each service handles one piece of the question-answering pipeline:
 - GenerationService: Talks to the AI to get answers
 - ContextOverflowService: Handles when there's too much context
 - TelemetryService: Tracks performance and costs
+- CodeRetrievalService: Repository-aware code analysis and retrieval
 """
 
 from src.core.services.retrieval_service import RetrievalService
@@ -14,3 +15,13 @@ from src.core.services.memory_service import MemoryService
 from src.core.services.generation_service import GenerationService
 from src.core.services.overflow_service import ContextOverflowService
 from src.core.services.telemetry_service import TelemetryService
+from src.core.services.code_retrieval_service import CodeRetrievalService
+
+__all__ = [
+    "RetrievalService",
+    "MemoryService", 
+    "GenerationService",
+    "ContextOverflowService",
+    "TelemetryService",
+    "CodeRetrievalService",
+]

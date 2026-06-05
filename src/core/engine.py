@@ -948,7 +948,7 @@ class RAGContextEngine:
                                 "observation": f"Routing execution to {next_agent}."
                             })
                             
-                    elif node_name in ["rag_worker_node", "web_worker_node", "utility_worker_node", "scraper_worker_node", "critic_worker_node"]:
+                    elif node_name in ["rag_worker_node", "web_worker_node", "utility_worker_node", "scraper_worker_node", "critic_worker_node", "coding_worker_node", "code_critic_worker_node"]:
                         llm_call_count += 1
                         worker_type = state_delta.get("worker_type", "")
                         if not worker_type:
@@ -964,7 +964,9 @@ class RAGContextEngine:
                             "web_worker": "Web Search Specialist",
                             "utility_worker": "Utility Specialist",
                             "scraper_worker": "Scraper Specialist",
-                            "critic_worker": "Critic Specialist"
+                            "critic_worker": "Critic Specialist",
+                            "coding_worker": "Coding Specialist",
+                            "code_critic_worker": "Code Critic Specialist"
                         }
                         specialist = specialist_labels.get(worker_type, worker_type.replace("_", " ").title())
                         

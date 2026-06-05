@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 
+from src.core.config import SUPERVISOR_MODEL_PRIMARY, SUPERVISOR_MODEL_FALLBACK
+
 logger = logging.getLogger("MultiAgent.Supervisor")
 
 SUPERVISOR_PROMPT = """You are a central planner and supervisor for a multi-agent cooperative system.
@@ -18,14 +20,14 @@ Available Workers:
 - scraper_worker: Fetch and extract text content from specific URLs or links. Use this when the query or step explicitly requires reading the content of a web page.
 - critic_worker: Analyze accumulated findings, cross-reference sources, fact-check, and identify inconsistencies or gaps. Use this to critique findings before synthesis.
 - report_worker: Generate comprehensive, long-form markdown reports from the accumulated findings. Use this when the user explicitly requests a report or summary document.
-- coding_worker: Write, modify, execute, debug, and verify code files in the workspace. Use this when the query requires writing code, creating scripts, editing source files, or running build/test commands.
-- code_critic_worker: Validate the correctness of the code and patch diffs proposed by the coding_worker, auditing against the repository AST symbol database.
+- coding_worker: Code generation, file creation/editing, security auditing, code review, and architecture evaluation. Use for creating files, writing code, modifying existing code, and code analysis tasks.
+- code_critic_worker: Validate findings from coding_worker against repository symbols, audit patch correctness, and check for security risks.
 
 Your duties:
 1. If the 'plan' is empty, construct a step-by-step plan (up to 3 steps) to answer the user query.
 2. If a plan exists, evaluate the 'scratchpad' findings against the plan to check progress.
-3. Determine the next step. If all research steps are resolved, check if the user requested a report/summary document. If yes, route to the report_worker (value for next_agent: 'report_worker'). If no report is needed, route to the synthesizer (value for next_agent: 'synthesizer').
-4. Otherwise, select the next appropriate worker ('rag_worker', 'web_worker', 'utility_worker', 'scraper_worker', 'critic_worker', 'report_worker', 'coding_worker', 'code_critic_worker') and write a specific sub-task instruction for them (e.g., "Find competitor Z's revenue", "Calculate 10% of 1000000", "Write a python script quicksort.py", "Audit the patch diff for quicksort.py", "Run pytest to verify").
+3. Determine the next step. If all research steps are resolved, check if the user requested a report/summary document. If yes, route to the report_worker. If no report is needed, route to the synthesizer.
+4. Otherwise, select the next appropriate worker. For code analysis tasks, route to coding_worker for analysis then code_critic_worker for validation.
 5. Write the updated plan, next_agent, and current_task in the JSON response.
 """
 
@@ -37,10 +39,11 @@ class SupervisorDecision(BaseModel):
 
 def get_routing_model():
     """Get the LLM model for routing with structured output."""
-    model_name = os.getenv("SUPERVISOR_MODEL", "llama-3.1-8b-instant")
-    api_key = os.getenv("AGENT_API_KEY")
-    model = ChatGroq(model=model_name, temperature=0, api_key=api_key)
-    return model.with_structured_output(SupervisorDecision)
+    primary_key = os.getenv("GROQ_API_KEY")
+    api_key = primary_key or os.getenv("AGENT_API_KEY")
+    primary = ChatGroq(model=SUPERVISOR_MODEL_PRIMARY, temperature=0, api_key=api_key).with_structured_output(SupervisorDecision)
+    fallback = ChatGroq(model=SUPERVISOR_MODEL_FALLBACK, temperature=0, api_key=api_key).with_structured_output(SupervisorDecision)
+    return primary.with_fallbacks([fallback])
 
 
 def supervisor_node(state: dict) -> dict:
@@ -73,7 +76,7 @@ Accumulated Findings (Scratchpad):
     routing_prompt.append(SystemMessage(content=blackboard_context))
     
     # Filter worker messages only from previous turns, keeping current turn's worker messages
-    worker_names = {"rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker"}
+    worker_names = {"rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "coding_worker", "code_critic_worker"}
     last_human_index = -1
     for i, msg in enumerate(messages):
         if isinstance(msg, dict):
@@ -109,7 +112,15 @@ Accumulated Findings (Scratchpad):
         next_agent = response.next_agent
         current_task = response.current_task
     except Exception as e:
-        logger.error(f"Supervisor routing/planning error: {e}")
+        error_str = str(e)
+        logger.error(f"Supervisor routing/planning error: {error_str}")
+        # Surface auth errors clearly instead of silently falling through
+        if "401" in error_str or "invalid_api_key" in error_str.lower() or "Invalid API Key" in error_str:
+            scratchpad += "\n- [SYSTEM ERROR]: LLM API authentication failed. The API key may be expired or invalid. Please restart the server after updating your .env file."
+        elif "429" in error_str or "rate_limit" in error_str.lower():
+            scratchpad += "\n- [SYSTEM ERROR]: LLM API rate limit exceeded. Please wait and try again."
+        else:
+            scratchpad += f"\n- [SYSTEM ERROR]: Supervisor LLM call failed: {error_str[:200]}"
         
     valid_agents = ["rag_worker", "web_worker", "utility_worker", "scraper_worker", "critic_worker", "report_worker", "coding_worker", "code_critic_worker", "synthesizer", "FINISH"]
     if next_agent not in valid_agents or next_agent == "FINISH":
@@ -119,7 +130,8 @@ Accumulated Findings (Scratchpad):
         "plan": plan_out,
         "next_agent": next_agent,
         "current_task": current_task,
-        "steps_remaining": new_steps
+        "steps_remaining": new_steps,
+        "scratchpad": scratchpad
     }
     
     print(f"\n[SUPERVISOR] Next Node: '{next_agent}' | Task: '{current_task}' | Steps Left: {new_steps}")

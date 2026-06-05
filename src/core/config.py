@@ -69,6 +69,30 @@ EXPANSION_MIN_WORDS = int(os.getenv("RAG_EXPANSION_MIN_WORDS", "5"))
 COST_PER_INPUT_TOKEN = 0.05 / 1_000_000
 COST_PER_OUTPUT_TOKEN = 0.08 / 1_000_000
 
+# --- Agent Model Strategy ---
+# Primary and fallback models for each agent type
+# Development environment: GROQ_CORE_KEY for most agents, GROQ_VALIDATION_KEY for critics
+SUPERVISOR_MODEL_PRIMARY = "llama-3.1-8b-instant"
+SUPERVISOR_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+RAG_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+RAG_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+CODING_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+CODING_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+CODE_CRITIC_MODEL_PRIMARY = "llama-3.1-8b-instant"
+CODE_CRITIC_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+CRITIC_MODEL_PRIMARY = "llama-3.1-8b-instant"
+CRITIC_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+SYNTHESIZER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+SYNTHESIZER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+REPORT_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+REPORT_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
 # --- Pipeline Feature Flags ---
 # These control conditional execution of expensive pipeline stages
 # Features are triggered based on retrieval confidence or mode settings

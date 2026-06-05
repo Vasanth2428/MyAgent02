@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import List, Dict, Any, Optional
 
 from src.core.code.indexer import CodeIndexer
@@ -7,6 +8,32 @@ from src.core.code.code_registry import CodeRegistry
 from src.core.retriever import WeaviateRetriever
 
 logger = logging.getLogger("RAG.CodeRetrievalService")
+
+# Security vulnerability patterns for auditing
+SECURITY_PATTERNS = {
+    "hardcoded_secret": [
+        r"(?i)(password|passwd|pwd)\s*=\s*['\"][^'\"]+['\"]",
+        r"(?i)(api_key|apikey|api-key)\s*=\s*['\"][^'\"]+['\"]",
+        r"(?i)(secret|token)\s*=\s*['\"][^'\"]+['\"]",
+        r"(?i)(private_key|privatekey)\s*=\s*['\"][^'\"]+['\"]",
+    ],
+    "sql_injection": [
+        r"(?i)(execute|query|cursor)\s*\(\s*f['\"]",
+        r"(?i)(execute|query)\s*\(\s*['\"].*\+",
+    ],
+    "command_injection": [
+        r"(?i)(subprocess|os\.system|os\.popen)\s*\(\s*f['\"]",
+        r"(?i)(subprocess|os\.system)\s*\([^)]*\+[^)]*\)",
+        r"(?i)subprocess\.call\s*\(\s*f['\"]",
+        r"(?i)subprocess\.run\s*\(\s*f['\"]",
+        r"(?i)subprocess\.Popen\s*\(\s*f['\"]",
+        r"(?i)shell\s*=\s*True",
+    ],
+    "path_traversal": [
+        r"(?i)open\s*\([^)]*\.\./",
+        r"(?i)(send|write|read)\s*\([^)]*\.\./",
+    ],
+}
 
 class CodeRetrievalService:
     """
@@ -99,3 +126,46 @@ class CodeRetrievalService:
             })
 
         return combined_results
+
+    def audit_security(self, filepath: str) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Scans a file for potential security vulnerabilities.
+        Returns a dict with vulnerability categories and findings.
+        """
+        findings = {category: [] for category in SECURITY_PATTERNS}
+        
+        full_path = os.path.realpath(os.path.join(self.project_root, filepath))
+        if not os.path.isfile(full_path):
+            logger.warning(f"File not found for security audit: {filepath}")
+            return {"error": [f"File '{filepath}' not found for audit"]}
+
+        try:
+            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+                lines = content.splitlines()
+        except Exception as e:
+            return {"error": [f"Failed to read file for audit: {e}"]}
+
+        for category, patterns in SECURITY_PATTERNS.items():
+            for pattern in patterns:
+                for line_num, line in enumerate(lines, 1):
+                    if re.search(pattern, line):
+                        findings[category].append({
+                            "line": line_num,
+                            "match": line.strip(),
+                            "pattern": pattern
+                        })
+        
+        return findings
+
+    def find_symbols_by_file(self, filepath: str) -> List[Dict[str, Any]]:
+        """Returns all symbols defined in a specific file."""
+        all_symbols = self.indexer.symbol_table.get_all_symbols()
+        return [s for s in all_symbols if s.get("filepath") == filepath]
+
+    def get_call_graph(self) -> Dict[str, Dict[str, List[str]]]:
+        """Returns the full call graph (callers and callees) for security dependency analysis."""
+        return {
+            "calls": {k: list(v) for k, v in self.indexer.dependency_graph.calls.items()},
+            "called_by": {k: list(v) for k, v in self.indexer.dependency_graph.called_by.items()},
+        }

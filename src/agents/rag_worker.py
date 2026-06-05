@@ -5,6 +5,8 @@ from typing import List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 
+from src.core.config import RAG_WORKER_MODEL_PRIMARY, RAG_WORKER_MODEL_FALLBACK
+
 logger = logging.getLogger("MultiAgent.RAGWorker")
 
 RAG_SYSTEM_PROMPT = """You are a RAG specialist. You can ONLY use the document_search tool to answer questions.
@@ -18,9 +20,11 @@ Never invent information. Use only what you find in the document search results.
 
 def get_reasoning_model():
     """Get the LLM model for complex reasoning via Groq."""
-    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
-    api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    core_key = os.getenv("GROQ_CORE_KEY")
+    api_key = core_key or os.getenv("AGENT_API_KEY")
+    primary = ChatGroq(model=RAG_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
+    fallback = ChatGroq(model=RAG_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
+    return primary.with_fallbacks([fallback])
 
 
 def rag_worker_node(state: dict, document_tool: callable = None) -> dict:

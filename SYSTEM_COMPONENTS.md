@@ -8,12 +8,42 @@ This system is a **hybrid RAG (Retrieval-Augmented Generation) and multi-agent a
 2. **Agentic Mode** - Multi-agent cooperative workflow with specialized workers
 
 ---
-
+ 
 ## Core Components
-
+ 
 ### 1. Main Entry Point (`src/main.py`)
-
+ 
 **Purpose**: System initialization and query execution entry point.
+ 
+### Code Intelligence Components
+ 
+#### Code Parser (`src/core/code/parser.py`)
+- **Purpose**: AST-based parsing for Python files
+- **Extracts**: Classes, functions, methods, imports, call sites
+ 
+#### Symbol Table (`src/core/code/symbol_table.py`)
+- **Purpose**: In-memory symbol registry for O(1) symbol lookups
+- **Features**: Fuzzy search, exact lookup, file filtering
+ 
+#### Dependency Graph (`src/core/code/dependency_graph.py`)
+- **Purpose**: Tracks import and call relationships
+- **Features**: Caller/callee resolution, import analysis
+ 
+#### Code Indexer (`src/core/code/indexer.py`)
+- **Purpose**: Repository-wide AST scanning and index building
+- **Features**: Directory walk, multi-file parsing, symbol extraction
+ 
+#### Code Registry (`src/core/code/code_registry.py`)
+- **Purpose**: Persistent index storage for fast startup
+- **Features**: JSON serialization, index caching
+ 
+#### Code Retrieval Service (`src/core/services/code_retrieval_service.py`)
+- **Purpose**: Repository-aware code search and analysis
+- **Features**:
+  - Hybrid search (Weaviate RAGCode + AST symbols)
+  - Security audit patterns (hardcoded secrets, SQL injection, command injection, path traversal)
+  - Call graph analysis for dependency tracking
+  - Symbol lookup by file or name
 
 **Principles**:
 - Single entry point for both CLI and programmatic usage
@@ -21,12 +51,36 @@ This system is a **hybrid RAG (Retrieval-Augmented Generation) and multi-agent a
 - Sanitizes all inputs before processing
 
 ---
-
+ 
 ## Multi-Agent Architecture
-
+ 
 ### 2. State Schema (`src/graph/state.py`)
-
+ 
 **Purpose**: Defines the shared state structure for agent coordination.
+ 
+### Code Intelligence Layer
+ 
+#### Code Worker (`src/agents/coding_worker.py`)
+- **Purpose**: READ-ONLY repository analysis, security auditing, code review, and architecture evaluation
+- **Principle**: Repository-aware tools for analysis, patch generation for review only (no direct file modification)
+- **Capabilities**:
+  - Symbol search and lookup (functions, classes, methods)
+  - Dependency and call graph analysis
+  - Hybrid semantic + AST code retrieval
+  - Security vulnerability scanning
+  - Patch diff generation and dry-run validation
+  - Repository structure inspection
+- **Output Format**: Structured with SUMMARY, FINDINGS, EVIDENCE, RECOMMENDATIONS sections
+ 
+#### Code Critic Worker (`src/agents/code_critic_worker.py`)
+- **Purpose**: Validates coding worker findings against repository symbols, audits patches for security risks
+- **Principle**: Evidence-based validation with severity ratings (info/warning/critical)
+- **Features**:
+  - Symbol hallucination detection
+  - Patch correctness verification
+  - Security risk analysis
+  - RETRY_REQUIRED token for critical issues
+- **Output**: Validation report with findings detail and overall status
 
 **Attributes**:
 | Field | Type | Purpose |
@@ -50,8 +104,17 @@ This system is a **hybrid RAG (Retrieval-Augmented Generation) and multi-agent a
 ---
 
 ### 3. Workflow Graph (`src/graph/workflow.py`)
-
+ 
 **Purpose**: Orchestrates the flow between agents using LangGraph.
+ 
+**Coding Workflows**:
+```
+User Query → supervisor_node
+  → coding_worker_node (repository analysis, security audit, patch generation)
+  → code_critic_worker_node (symbol validation, patch review, security check)
+  → aggregate_parallel_results_node
+  → synthesizer_node → Final Answer
+```
 
 **Components**:
 - **Nodes**: supervisor, 6 workers, aggregator, synthesizer

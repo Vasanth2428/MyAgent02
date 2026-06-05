@@ -371,6 +371,29 @@ def modify_files(filepath: str, target_code: str, replacement_code: str) -> str:
         return f"Error editing file '{filepath}': {e}"
 
 
+
+
+def delete_file(filepath: str) -> str:
+    """
+    Delete a file in the workspace.
+    
+    Args:
+        filepath: File path relative to './workspace'.
+    """
+    if not _is_safe_path(filepath):
+        return f"Error: Access denied. Filepath '{filepath}' violates safety or path policies."
+        
+    abs_path = _get_absolute_path(filepath)
+    if not os.path.isfile(abs_path):
+        return f"Error: File '{filepath}' does not exist."
+        
+    try:
+        os.remove(abs_path)
+        return f"Success: Deleted file '{filepath}'."
+    except Exception as e:
+        return f"Error deleting file '{filepath}': {e}"
+
+
 def list_files(directory: str = ".") -> str:
     """
     List files and subdirectories inside the `./workspace` folder.

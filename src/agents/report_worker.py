@@ -5,6 +5,8 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 
+from src.core.config import REPORT_WORKER_MODEL_PRIMARY, REPORT_WORKER_MODEL_FALLBACK
+
 logger = logging.getLogger("MultiAgent.ReportWorker")
 
 REPORT_SYSTEM_PROMPT = """You are a Report Specialist for a cooperative multi-agent system.
@@ -38,9 +40,11 @@ def cleanup_old_reports(reports_dir: str, max_age_hours: int = 48):
 
 def get_report_model():
     """Get the LLM model for report generation."""
-    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
-    api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0.3, api_key=api_key)
+    primary_key = os.getenv("GROQ_CORE_KEY")
+    api_key = primary_key or os.getenv("AGENT_API_KEY")
+    primary = ChatGroq(model=REPORT_WORKER_MODEL_PRIMARY, temperature=0.3, api_key=api_key)
+    fallback = ChatGroq(model=REPORT_WORKER_MODEL_FALLBACK, temperature=0.3, api_key=api_key)
+    return primary.with_fallbacks([fallback])
 
 def report_worker_node(state: dict) -> dict:
     """
