@@ -6,24 +6,31 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 
+from src.core.config import CODE_CRITIC_MODEL_PRIMARY, CODE_CRITIC_MODEL_FALLBACK
+
 logger = logging.getLogger("MultiAgent.CodeCriticWorker")
 
 CRITIC_SYSTEM_PROMPT = """You are a Code Critic and Security Auditor. Your job is to validate the findings and proposed code changes from the Coding Specialist worker.
 
 You must examine:
 1. Symbol references: Ensure no class, function, or method names mentioned by the worker are hallucinated. They must be validated against the actual repository symbols.
-2. Code corrections / Diff patch correctness: Check if the patch diff aligns with the code structure.
+2. Code corrections / Diff patch correctness: Check if the patch diff aligns with the code structure and does not introduce security vulnerabilities.
 3. Unsupported conclusions or logic flaws: Fact-check code reasoning and logic claims.
+4. Security audit: Review for injection vulnerabilities, hardcoded secrets, unsafe patterns, and privilege escalation risks.
 
 Check against the provided Repository Symbol List and Dependency details.
 Output a structured analysis rating the severity of any found issues (Severity levels: 'info', 'warning', 'critical').
+
+If you detect a critical issue that MUST be fixed, end your response with the exact token 'RETRY_REQUIRED'.
 """
 
 class CriticFinding(BaseModel):
-    issue_type: str = Field(description="The category of issue (e.g. 'hallucinated_symbol', 'syntax_error', 'unsupported_claim', 'patch_mismatch')")
+    issue_type: str = Field(description="The category of issue (e.g. 'hallucinated_symbol', 'syntax_error', 'unsupported_claim', 'patch_mismatch', 'security_risk')")
     symbol_name: Optional[str] = Field(description="The symbol associated with the issue, if applicable", default=None)
+    file_location: Optional[str] = Field(description="The file location where the issue was found", default=None)
     details: str = Field(description="Detailed explanation of the issue or validation finding")
     severity: str = Field(description="Severity rating ('info', 'warning', 'critical')")
+    evidence: Optional[str] = Field(description="Evidence supporting the finding", default=None)
 
 class CriticReport(BaseModel):
     valid: bool = Field(description="True if the coding worker's findings and patches are fully validated with no critical issues.")
@@ -33,10 +40,11 @@ class CriticReport(BaseModel):
 
 def get_critic_model():
     """Returns Groq model with structured output mapping for Critic reports."""
-    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
-    api_key = os.getenv("AGENT_API_KEY")
-    llm = ChatGroq(model=model_name, temperature=0, api_key=api_key)
-    return llm.with_structured_output(CriticReport)
+    validation_key = os.getenv("GROQ_VALIDATION_KEY")
+    api_key = validation_key or os.getenv("AGENT_API_KEY")
+    primary = ChatGroq(model=CODE_CRITIC_MODEL_PRIMARY, temperature=0, api_key=api_key).with_structured_output(CriticReport)
+    fallback = ChatGroq(model=CODE_CRITIC_MODEL_FALLBACK, temperature=0, api_key=api_key).with_structured_output(CriticReport)
+    return primary.with_fallbacks([fallback])
 
 
 def code_critic_worker_node(state: dict) -> dict:
@@ -84,31 +92,45 @@ def code_critic_worker_node(state: dict) -> dict:
         HumanMessage(content=f"Coding Specialist Task: {current_task}\n\nCoding Specialist Output:\n{coding_output}")
     ]
     
+    is_invalid = False
     try:
         report: CriticReport = model.invoke(critic_prompt)
         
         # Format findings for presentation
         output_lines = []
         output_lines.append("### CODE CRITIC VALIDATION REPORT")
-        output_lines.append(f"**Valid**: {report.valid}")
+        output_lines.append(f"**Status**: {'✓ VALIDATED' if report.valid else '✗ ISSUES FOUND'}")
         output_lines.append(f"**Critique Summary**: {report.criticism_summary}\n")
         
         if report.findings:
             output_lines.append("### FINDINGS DETAIL")
+            output_lines.append("")
             for f in report.findings:
-                output_lines.append(f"- **[{f.severity.upper()}]** ({f.issue_type}): {f.details} (Symbol: {f.symbol_name or 'N/A'})")
+                loc = f" ({f.file_location})" if f.file_location else ""
+                output_lines.append(f"- **[{f.severity.upper()}]** ({f.issue_type}){loc}")
+                output_lines.append(f"  - {f.details}")
+                if f.evidence:
+                    output_lines.append(f"  - Evidence: {f.evidence}")
+                if f.symbol_name:
+                    output_lines.append(f"  - Symbol: {f.symbol_name}")
+                output_lines.append("")
         else:
-            output_lines.append("- No issues detected.")
-            
+            output_lines.append("No issues detected.")
+        
+        is_invalid = not report.valid or any(f.severity.lower() == "critical" for f in report.findings)
+        if is_invalid:
+            output_lines.append("\nRETRY_REQUIRED")
+             
         final_text = "\n".join(output_lines)
     except Exception as e:
         logger.error(f"Error executing critic model call: {e}")
         final_text = f"Error during Code Critic model execution: {e}"
+        is_invalid = False
 
     logger.info("Code Critic Worker execution completed.")
     updated_scratchpad = scratchpad + f"\n- [Code Critic]: Code validation report:\n{final_text}"
     
-    return {
+    state_update = {
         "messages": [AIMessage(content=final_text, name="code_critic_worker")],
         "scratchpad": updated_scratchpad,
         "worker_complete": {"code_critic_worker": True},
@@ -116,3 +138,10 @@ def code_critic_worker_node(state: dict) -> dict:
         "worker_type": "code_critic_worker",
         "next_agent": "supervisor"
     }
+    
+    if is_invalid:
+        logger.info("[CODE CRITIC WORKER] Critical issue detected! Forcing supervisor retry.")
+        current_plan = state.get("plan", [])
+        state_update["plan"] = current_plan + ["FIX ERROR: Review code critic feedback and modify files to correct the issues."]
+        
+    return state_update

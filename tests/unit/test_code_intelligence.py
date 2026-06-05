@@ -201,3 +201,106 @@ def test_critic_node(mock_service, mock_get_critic):
     assert res["worker_complete"]["code_critic_worker"] is True
     assert "CODE CRITIC VALIDATION REPORT" in res["worker_outputs"]["code_critic_worker"]
     assert "valid_symbol" in res["scratchpad"] or "validated" in res["scratchpad"]
+
+
+@patch("src.agents.code_critic_worker.get_critic_model")
+@patch("src.agents.coding_worker.get_retrieval_service")
+def test_critic_node_retry_required(mock_service, mock_get_critic):
+    # Mock symbols list from service
+    mock_indexer = MagicMock()
+    mock_indexer.symbol_table.get_all_symbols.return_value = []
+    mock_srv = MagicMock(indexer=mock_indexer)
+    mock_service.return_value = mock_srv
+    
+    # Mock LLM Critic Report with critical failure
+    mock_finding = MagicMock(
+        issue_type="hallucinated_symbol",
+        symbol_name="missing_func",
+        file_location="main.py",
+        details="Function missing_func does not exist in repository.",
+        severity="critical",
+        evidence="Checked symbol table."
+    )
+    mock_report = MagicMock(
+        valid=False,
+        findings=[mock_finding],
+        criticism_summary="Found critical symbol hallucination."
+    )
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = mock_report
+    mock_get_critic.return_value = mock_llm
+    
+    state = {
+        "scratchpad": "",
+        "current_task": "Write coding task",
+        "plan": ["Write code"],
+        "worker_outputs": {
+            "coding_worker": "Created script implementing missing_func."
+        }
+    }
+    
+    res = code_critic_worker_node(state)
+    assert res["worker_complete"]["code_critic_worker"] is True
+    assert "RETRY_REQUIRED" in res["worker_outputs"]["code_critic_worker"]
+    assert "FIX ERROR" in res["plan"][-1]
+
+
+def test_security_audit():
+    """Test security audit functionality for vulnerability detection."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a test file with vulnerabilities
+        vuln_file = os.path.join(temp_dir, "vulnerable.py")
+        vuln_code = '''
+PASSWORD = "super_secret_password_123"
+api_key = "sk-12345"
+def unsafe_sql(user):
+    cursor.execute(f"SELECT * FROM users WHERE name='{user}'")
+def unsafe_cmd(cmd):
+    import subprocess
+    subprocess.call(f"echo {cmd}", shell=True)  # f-string triggers pattern
+'''
+        with open(vuln_file, "w", encoding="utf-8") as f:
+            f.write(vuln_code)
+        
+        # Mock retriever to avoid Weaviate connection
+        from src.core.services.code_retrieval_service import CodeRetrievalService
+        from unittest.mock import MagicMock
+        
+        mock_retriever = MagicMock()
+        service = CodeRetrievalService(temp_dir, mock_retriever)
+        
+        findings = service.audit_security("vulnerable.py")
+        
+        assert "hardcoded_secret" in findings
+        assert len(findings["hardcoded_secret"]) >= 1
+        assert any("PASSWORD" in str(f) for f in findings["hardcoded_secret"])
+        
+        assert "sql_injection" in findings
+        assert len(findings["sql_injection"]) >= 1
+        
+        assert "command_injection" in findings
+        assert len(findings["command_injection"]) >= 1
+
+
+def test_call_graph():
+    """Test call graph analysis for dependency tracking."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create test files
+        main_file = os.path.join(temp_dir, "main.py")
+        with open(main_file, "w", encoding="utf-8") as f:
+            f.write('''
+def main():
+    helper()
+def helper():
+    pass
+''')
+        
+        from src.core.services.code_retrieval_service import CodeRetrievalService
+        from unittest.mock import MagicMock
+        
+        mock_retriever = MagicMock()
+        service = CodeRetrievalService(temp_dir, mock_retriever)
+        
+        graph = service.get_call_graph()
+        assert "calls" in graph
+        assert "called_by" in graph

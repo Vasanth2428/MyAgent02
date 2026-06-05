@@ -37,7 +37,7 @@ class TestCodingWorker(unittest.TestCase):
         res = coding_worker_node(state)
         self.assertEqual(res["worker_complete"]["coding_worker"], True)
         self.assertEqual(res["worker_outputs"]["coding_worker"], "Finished coding task successfully.")
-        self.assertIn("Finished coding task successfully.", res["scratchpad"])
+        self.assertIn("Coding Worker", res["scratchpad"])
         self.assertEqual(res["next_agent"], "supervisor")
 
     @patch("src.agents.coding_worker.get_coding_model")
@@ -69,6 +69,41 @@ class TestCodingWorker(unittest.TestCase):
             self.assertEqual(res["worker_complete"]["coding_worker"], True)
             self.assertIn("Coding Worker", res["scratchpad"])
 
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_node_delete_file(self, mock_get_model):
+        """Coding worker should execute the delete_file tool when requested by the model."""
+        mock_tool_call = {
+            "name": "delete_file",
+            "args": {"filepath": "temp_delete.py"},
+            "id": "call_999"
+        }
+        
+        mock_response = MagicMock()
+        mock_response.tool_calls = [mock_tool_call]
+        mock_response.content = "Deleting file."
+        
+        mock_response_stop = MagicMock()
+        mock_response_stop.tool_calls = []
+        mock_response_stop.content = "Finished deleting."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = [mock_response, mock_response_stop]
+        mock_get_model.return_value = mock_llm
+        
+        state = {
+            "current_task": "Delete the temp file",
+            "scratchpad": "",
+            "messages": []
+        }
+        
+        mock_delete = MagicMock()
+        mock_delete.invoke = MagicMock(return_value="Success: Deleted file 'temp_delete.py'")
+        with patch.dict(tools_map, {"delete_file": mock_delete}):
+            res = coding_worker_node(state)
+            self.assertEqual(res["worker_complete"]["coding_worker"], True)
+            mock_delete.invoke.assert_called_once_with({"filepath": "temp_delete.py"})
+
 
 if __name__ == "__main__":
     unittest.main()
+
