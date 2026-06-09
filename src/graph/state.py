@@ -71,3 +71,8 @@ class ContextEngineState(TypedDict):
     current_task: str
     worker_complete: Annotated[Dict[str, bool], merge_dict]
     worker_outputs: Annotated[Dict[str, str], merge_dict]
+    critic_retry_count: int
+    pending_file_approvals: Dict[str, Dict]
+    waiting_for_approval: bool
+    approval_filepath: str
+    approval_tool: str  

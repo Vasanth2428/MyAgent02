@@ -55,6 +55,14 @@ def route_based_on_next_agent(state: dict) -> str:
         return "synthesizer_node"
     return END
 
+
+def route_after_coding_worker(state: dict) -> str:
+    """Route after coding worker - check if waiting for approval to pause workflow."""
+    if state.get("waiting_for_approval"):
+        return END
+    return "aggregate_parallel_results_node"
+
+
 def aggregate_parallel_results_node(state: dict) -> dict:
     """Merge worker outputs from state into scratchpad and return update."""
     scratchpad = state.get("scratchpad", "") or ""
@@ -129,7 +137,17 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_edge("scraper_worker_node", "aggregate_parallel_results_node")
     workflow.add_edge("critic_worker_node", "aggregate_parallel_results_node")
     workflow.add_edge("report_worker_node", "aggregate_parallel_results_node")
-    workflow.add_edge("coding_worker_node", "aggregate_parallel_results_node")
+    
+    # Conditional edge after coding worker to support human-in-the-loop approval
+    workflow.add_conditional_edges(
+        "coding_worker_node",
+        route_after_coding_worker,
+        {
+            "aggregate_parallel_results_node": "aggregate_parallel_results_node",
+            END: END
+        }
+    )
+    
     workflow.add_edge("code_critic_worker_node", "aggregate_parallel_results_node")
     
     # Aggregator collects results back to supervisor

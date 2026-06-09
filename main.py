@@ -19,6 +19,16 @@ import sys
 import sentence_transformers
 import transformers
 
+import sys
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 print(f"DEBUG: sys.executable = {sys.executable}", flush=True)
 print(f"DEBUG: sentence-transformers = {sentence_transformers.__version__}", flush=True)
 print(f"DEBUG: transformers = {transformers.__version__}", flush=True)
@@ -32,6 +42,13 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from pypdf import PdfReader
 from dotenv import load_dotenv
+
+# Load environment variables from config directory
+load_dotenv(dotenv_path="config/.env")
+
+# Load environment variables before any local module imports
+load_dotenv()
+
 import uuid
 
 from src.core.config import CHUNK_SIZE, CHUNK_OVERLAP, PipelineConfig
@@ -40,15 +57,12 @@ from src.core.engine import RAGContextEngine
 from src.core.splitter import RecursiveCharacterSplitter
 from src.core.scraper import close_aiohttp_session
 
-# Load environment variables
-load_dotenv()
-
 # Configure Application Logging
 import logging.handlers
 os.makedirs("logs", exist_ok=True)
 
 file_handler = logging.handlers.RotatingFileHandler(
-    "logs/rag_engine.log", maxBytes=5*1024*1024, backupCount=3
+    "logs/rag_engine.log", maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
 )
 console_handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
@@ -162,6 +176,9 @@ class CachedStaticFiles(StaticFiles):
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
+
+# Ensure checkpoints directory exists
+os.makedirs("checkpoints", exist_ok=True)
 
 
 # ------------------------------------------------------------------
@@ -362,7 +379,109 @@ async def delete_session(session_id: str):
     return None
 
 
+
+# ------------------------------------------------------------------
+# Approval Management Endpoints (Human-in-the-Loop)
+# ------------------------------------------------------------------
+
+class ApprovalRequest(BaseModel):
+    session_id: str
+    approve: bool
+
+@app.get("/pending_approval/{session_id}")
+async def get_pending_approval(session_id: str):
+    """Check if there are pending file changes awaiting approval."""
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    from src.agents.coding_worker import get_pending_approval
+    pending = get_pending_approval(session_id)
+    if pending:
+        return {"has_pending": True, "filepath": pending["filepath"], "tool": pending["tool"]}
+    return {"has_pending": False}
+
+@app.post("/approve_changes")
+async def approve_changes(request: ApprovalRequest):
+    """Approve or reject pending file changes and continue workflow."""
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+    from src.agents.coding_worker import get_pending_approval, execute_pending_approval, clear_pending_approval
+    from langchain_core.messages import HumanMessage, AIMessage
+    from src.graph.workflow import get_graph_config
+    
+    session_id = request.session_id
+    pending = get_pending_approval(session_id)
+    
+    if not pending:
+        return {"status": "no_pending_approval"}
+    
+    config = get_graph_config(session_id)
+    
+    if request.approve:
+        approval_token = f"[APPROVED: {pending['filepath']}]"
+        
+        async def resume_workflow():
+            try:
+                if hasattr(rag.multi_agent_checkpointer, "aget_tuple"):
+                    checkpoint = await rag.multi_agent_checkpointer.aget_tuple(config)
+                else:
+                    checkpoint = rag.multi_agent_checkpointer.get_tuple(config)
+                
+                if checkpoint:
+                    current_scratchpad = checkpoint.checkpoint.get("scratchpad", "")
+                    new_scratchpad = current_scratchpad + f"\n{approval_token}"
+                    
+                    update_state = {
+                        "scratchpad": new_scratchpad,
+                        "waiting_for_approval": False,
+                        "worker_complete": {"coding_worker": False}
+                    }
+                    
+                    if hasattr(rag.multi_agent_graph, "aupdate_state"):
+                        result = await rag.multi_agent_graph.aupdate_state(config, update_state)
+                    else:
+                        result = rag.multi_agent_graph.update_state(config, update_state)
+                    
+                    try:
+                        if hasattr(rag.multi_agent_graph, "ainvoke"):
+                            final_result = await rag.multi_agent_graph.ainvoke(None, config=config)
+                        else:
+                            final_result = rag.multi_agent_graph.invoke(None, config=config)
+                        return {"status": "approved", "message": "Workflow resumed successfully", "result": final_result.get("final_answer", "Workflow completed")}
+                    except Exception as invoke_error:
+                        return {"status": "approved", "message": "Approval recorded, workflow may be complete"}
+                
+                result = execute_pending_approval(session_id)
+                return {"status": "approved", "result": result, "message": "Tool executed directly (fallback)"}
+            except Exception as e:
+                return {"status": "approved", "message": f"Approval recorded: {str(e)}"}
+        
+        result = await resume_workflow()
+        return result
+    else:
+        clear_pending_approval(session_id)
+        try:
+            if hasattr(rag.multi_agent_checkpointer, "aget_tuple"):
+                checkpoint = await rag.multi_agent_checkpointer.aget_tuple(config)
+            else:
+                checkpoint = rag.multi_agent_checkpointer.get_tuple(config)
+            
+            if checkpoint:
+                update_state = {
+                    "waiting_for_approval": False,
+                    "worker_complete": {"coding_worker": True},
+                    "worker_outputs": {"coding_worker": "User rejected file changes."}
+                }
+                if hasattr(rag.multi_agent_graph, "aupdate_state"):
+                    rag.multi_agent_graph.aupdate_state(config, update_state)
+                else:
+                    rag.multi_agent_graph.update_state(config, update_state)
+        except Exception:
+            pass
+        return {"status": "rejected"}
+
+
 if __name__ == "__main__":
     import uvicorn
     logger.info("Launching Uvicorn server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
