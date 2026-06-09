@@ -8,9 +8,25 @@ from src.core.code.dependency_graph import DependencyGraph
 
 logger = logging.getLogger("RAG.CodeIndexer")
 
+# Multi-language support configuration
+SUPPORTED_EXTENSIONS = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".jsx": "jsx",
+    ".java": "java",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+}
+
 class CodeIndexer:
     """
     Scans repository directory structures and populates symbol tables and dependency graphs.
+    Uses Tree-sitter for robust multi-language parsing (upgrade from raw ast).
     """
     def __init__(self, project_root: str) -> None:
         self.project_root = os.path.realpath(project_root)
@@ -21,35 +37,40 @@ class CodeIndexer:
         # Folders to exclude from indexing
         self.exclude_dirs = {
             ".git", "__pycache__", ".venv", "venv", "node_modules", "checkpoints", 
-            ".pytest_cache", ".ruff_cache", "logs", "reports"
+            ".pytest_cache", ".ruff_cache", "logs", "reports", ".next", "dist", "build"
         }
 
     def index_repository(self) -> None:
-        """Walks the repository directory tree, parsing all Python source files."""
-        logger.info(f"Initiating AST code indexing of repository at: {self.project_root}")
+        """Walks the repository directory tree, parsing all supported source files."""
+        logger.info(f"Initiating Tree-sitter code indexing of repository at: {self.project_root}")
         self.symbol_table.clear()
         self.dependency_graph.clear()
         self.indexed_files.clear()
         
-        py_files_count = 0
+        files_count = 0
+        language_counts: Dict[str, int] = {}
         
         for root, dirs, files in os.walk(self.project_root):
             # Exclude folders in-place
             dirs[:] = [d for d in dirs if d not in self.exclude_dirs]
             
             for file in files:
-                if file.endswith(".py"):
+                ext = os.path.splitext(file)[1].lower()
+                if ext in SUPPORTED_EXTENSIONS:
                     full_path = os.path.realpath(os.path.join(root, file))
                     rel_path = os.path.relpath(full_path, self.project_root)
                     
-                    self._index_file(full_path, rel_path)
-                    py_files_count += 1
+                    lang = SUPPORTED_EXTENSIONS[ext]
+                    language_counts[lang] = language_counts.get(lang, 0) + 1
                     
-        logger.info(f"AST code indexing completed. Total files parsed: {py_files_count}")
+                    self._index_file(full_path, rel_path, lang)
+                    files_count += 1
+                    
+        logger.info(f"Tree-sitter indexing completed. Total files parsed: {files_count} ({language_counts})")
 
-    def _index_file(self, full_path: str, rel_path: str) -> None:
+    def _index_file(self, full_path: str, rel_path: str, language: str = "python") -> None:
         """Parse a single file and load definitions into symbol table and dependency graph."""
-        res = parse_code_file(full_path)
+        res = parse_code_file(full_path, language=language)
         self.indexed_files.add(rel_path)
         
         # 1. Populate Symbol Table

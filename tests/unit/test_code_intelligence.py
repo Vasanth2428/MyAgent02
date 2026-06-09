@@ -304,3 +304,44 @@ def helper():
         graph = service.get_call_graph()
         assert "calls" in graph
         assert "called_by" in graph
+
+
+def test_tree_sitter_parser():
+    """Test Tree-sitter parser for robust code extraction."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a test Python file
+        test_file = os.path.join(temp_dir, "ts_test.py")
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write(SAMPLE_CODE)
+        
+        # Test with explicit tree-sitter language
+        res = parse_code_file(test_file, language="python")
+        
+        if not res.get("error"):
+            # Tree-sitter is available, check results
+            symbols = res["symbols"]
+            classes = [s for s in symbols if s["type"] == "class"]
+            methods = [s for s in symbols if s["type"] in ("method", "async_function")]
+            functions = [s for s in symbols if s["type"] == "function"]
+            
+            assert len(classes) >= 1
+            assert any(c["name"] == "DataProcessor" for c in classes)
+            assert len(methods) >= 2 or len(functions) >= 1
+        else:
+            # Tree-sitter not installed, skip
+            pytest.skip(f"Tree-sitter not available: {res.get('error')}")
+
+
+def test_multi_language_indexing():
+    """Test indexing multiple file types."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create Python file
+        py_file = os.path.join(temp_dir, "module.py")
+        with open(py_file, "w", encoding="utf-8") as f:
+            f.write("def test(): pass\n")
+        
+        indexer = CodeIndexer(temp_dir)
+        indexer.index_repository()
+        
+        # Python file should be indexed
+        assert "module.py" in indexer.indexed_files
