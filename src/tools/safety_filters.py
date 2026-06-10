@@ -17,11 +17,11 @@ def sanitize_user_input(text: str) -> str:
         return ""
     
     dangerous_patterns = [
-        r"(?i)ignore (previous|above|all) (instructions|prompt)",
-        r"(?i)you are (now|actually)",
-        r"(?i)new (instructions|system prompt)",
-        r"(?i)(system|assistant|user):",
-        r"(?i)</?(?:script|style|iframe)",
+        r"(?i)\bignore\s+(?:previous|above|all)\s+(?:instructions|prompt)\b",
+        r"(?i)\byou\s+are\s+(?:now|actually)\b",
+        r"(?i)\bnew\s+(?:instructions|system\s+prompt)\b",
+        r"(?i)\b(?:system|assistant|user):\b",
+        r"(?i)</?(?:script|style|iframe)\b",
     ]
     
     sanitized = text[:MAX_QUERY_LENGTH]

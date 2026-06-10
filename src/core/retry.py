@@ -28,6 +28,7 @@ def retry(
     transient_errors: Optional[Union[Type[BaseException], Tuple[Type[BaseException], ...]]] = None,
     is_transient_fn: Optional[Callable[[BaseException], bool]] = None,
     logger_name: str = "RAG.Retry",
+    on_retry_fn: Optional[Callable[[int, float, BaseException], Any]] = None,
 ):
     """
     Automatically retry operations that fail temporarily.
@@ -43,6 +44,7 @@ def retry(
         transient_errors: Which errors should trigger a retry
         is_transient_fn: Custom function to decide if an error is temporary
         logger_name: Where to log retry messages
+        on_retry_fn: Optional callback function triggered before sleeping on retry attempts
     """
     local_logger = logging.getLogger(logger_name)
     
@@ -96,6 +98,16 @@ def retry(
                             f"Async operation {func_name} failed with {type(e).__name__}: {e}. "
                             f"Retrying in {delay:.2f}s (Attempt {attempt}/{retries})...."
                         )
+                        
+                        if on_retry_fn is not None:
+                            try:
+                                if inspect.iscoroutinefunction(on_retry_fn):
+                                    await on_retry_fn(attempt, delay, e)
+                                else:
+                                    on_retry_fn(attempt, delay, e)
+                            except Exception as cb_err:
+                                local_logger.error(f"Error in on_retry_fn callback: {cb_err}")
+                                
                         import asyncio
                         await asyncio.sleep(delay)
                 
@@ -145,6 +157,13 @@ def retry(
                             f"Operation {func_name} failed with {type(e).__name__}: {e}. "
                             f"Retrying in {delay:.2f}s (Attempt {attempt}/{retries})...."
                         )
+                        
+                        if on_retry_fn is not None:
+                            try:
+                                on_retry_fn(attempt, delay, e)
+                            except Exception as cb_err:
+                                local_logger.error(f"Error in on_retry_fn callback: {cb_err}")
+                                
                         time.sleep(delay)
                 
                 raise Exception("Retry loop failed unexpectedly")

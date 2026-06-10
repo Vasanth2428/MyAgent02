@@ -97,12 +97,10 @@ Please write the comprehensive report based on the above information.
         report_content = ""
 
     updated_scratchpad = scratchpad + f"\n- [Report Worker]: {summary_msg}"
-    worker_complete["report_worker"] = True
-
     return {
         "messages": [AIMessage(content=summary_msg, name="report_worker")],
         "scratchpad": updated_scratchpad,
-        "worker_complete": worker_complete,
+        "worker_complete": {"report_worker": True},
         "worker_outputs": {"report_worker": summary_msg},
         "worker_type": "report_worker",
         "next_agent": "supervisor"

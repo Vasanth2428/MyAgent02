@@ -17,11 +17,14 @@ Do not answer general knowledge questions.
 """
 
 
+from src.core.config import UTILITY_WORKER_MODEL_PRIMARY, UTILITY_WORKER_MODEL_FALLBACK
+
 def get_routing_model():
     """Get the LLM model for routing via Groq."""
-    model_name = os.getenv("SUPERVISOR_MODEL", "llama-3.1-8b-instant")
     api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    primary = ChatGroq(model=UTILITY_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
+    fallback = ChatGroq(model=UTILITY_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
+    return primary.with_fallbacks([fallback])
 
 
 def _build_utility_response(response: str, scratchpad: str, result_type: str = "Utility Worker") -> dict:
@@ -63,6 +66,13 @@ def utility_worker_node(state: dict) -> dict:
     
     query_lower = target_query.lower()
     try:
+        # Prevent collisions with code or repository analysis tasks
+        coding_keywords = ["code", "file", "repository", "database", "class", "function", "compile", "bug", "syntax", "develop", "config", "logic flaws"]
+        if any(kw in query_lower for kw in coding_keywords):
+            print(f"\n[UTILITY WORKER] Coding-related query detected. Advising supervisor to route to coding worker.")
+            fallback_msg = "This request involves code or repository analysis. Please route code/repository analysis tasks to the coding specialist."
+            return _build_utility_response(fallback_msg, scratchpad, "Utility Worker")
+
         if any(word in query_lower for word in ["calculate", "math", "+", "-", "*", "/", "times", "plus", "minus", "divide", "multiply", "sum", "difference"]):
             import re
             normalized_query = (
@@ -106,7 +116,23 @@ def utility_worker_node(state: dict) -> dict:
         
         if any(word in query_lower for word in ["summarize", "summary", "condense", "shorten"]):
             print(f"\n[UTILITY WORKER] Summarization query detected...")
-            return _build_utility_response("Please provide the text you'd like me to summarize.", scratchpad, "Utility Worker")
+            # Look for text to summarize in the scratchpad or messages first
+            text_to_summarize = ""
+            if scratchpad:
+                text_to_summarize = scratchpad
+            else:
+                messages = state.get("messages", [])
+                for msg in reversed(messages):
+                    content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                    if content and not any(w in content.lower() for w in ["summarize", "summary", "condense", "shorten"]):
+                        text_to_summarize = content
+                        break
+            if text_to_summarize:
+                print(f"[UTILITY WORKER] Found text to summarize ({len(text_to_summarize)} chars). Running summarizer...")
+                summary = summarize_text(text_to_summarize)
+                return _build_utility_response(summary, scratchpad, "Utility Worker")
+            else:
+                return _build_utility_response("Please provide the text you'd like me to summarize.", scratchpad, "Utility Worker")
         
         fallback_msg = "I can only perform calculations, date/time queries, or summarization."
         return _build_utility_response(fallback_msg, scratchpad, "Utility Worker")

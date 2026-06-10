@@ -18,7 +18,7 @@ import os
 # --- LLM ---
 LLM_MODEL = "llama-3.1-8b-instant"
 LLM_TEMPERATURE = 0.1
-CONTEXT_WINDOW_LIMIT = 8192
+CONTEXT_WINDOW_LIMIT = 131072
 
 # --- Embedding ---
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
@@ -33,9 +33,9 @@ MAX_CANDIDATES = 12
 DEFAULT_TOP_K = 5
 
 # --- Token Budgets ---
-TOTAL_CONTEXT_BUDGET = int(os.getenv("RAG_TOTAL_CONTEXT_BUDGET", "1500"))
-MEMORY_TOKEN_BUDGET = int(os.getenv("RAG_MEMORY_TOKEN_BUDGET", "300"))
-MIN_KNOWLEDGE_BUDGET = int(os.getenv("RAG_MIN_KNOWLEDGE_BUDGET", "300"))
+TOTAL_CONTEXT_BUDGET = int(os.getenv("RAG_TOTAL_CONTEXT_BUDGET", "16384"))
+MEMORY_TOKEN_BUDGET = int(os.getenv("RAG_MEMORY_TOKEN_BUDGET", "4096"))
+MIN_KNOWLEDGE_BUDGET = int(os.getenv("RAG_MIN_KNOWLEDGE_BUDGET", "8192"))
 TOKENIZER_ENCODING = "cl100k_base"
 
 # --- Compression ---
@@ -55,7 +55,7 @@ SEMANTIC_DEDUP_THRESHOLD = float(os.getenv("RAG_SEMANTIC_DEDUP_THRESHOLD", "0.85
 SEMANTIC_DEDUP_MIN_WORDS = int(os.getenv("RAG_SEMANTIC_DEDUP_MIN_WORDS", "4"))
 
 # --- Database ---
-DB_PATH = os.getenv("RAG_DB_PATH", "memory.db")
+DB_PATH = os.getenv("RAG_DB_PATH", "data/memory.db")
 HISTORY_LIMIT = int(os.getenv("RAG_HISTORY_LIMIT", "10"))
 
 # --- HyDE ---
@@ -72,7 +72,7 @@ COST_PER_OUTPUT_TOKEN = 0.08 / 1_000_000
 # --- Agent Model Strategy ---
 # Primary and fallback models for each agent type
 # Development environment: GROQ_CORE_KEY for most agents, GROQ_VALIDATION_KEY for critics
-SUPERVISOR_MODEL_PRIMARY = "llama-3.1-8b-instant"
+SUPERVISOR_MODEL_PRIMARY = "llama-3.3-70b-versatile"
 SUPERVISOR_MODEL_FALLBACK = "llama-3.1-8b-instant"
 
 RAG_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
@@ -92,6 +92,15 @@ SYNTHESIZER_MODEL_FALLBACK = "llama-3.1-8b-instant"
 
 REPORT_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
 REPORT_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+WEB_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+WEB_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+SCRAPER_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+SCRAPER_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
+
+UTILITY_WORKER_MODEL_PRIMARY = "llama-3.1-8b-instant"
+UTILITY_WORKER_MODEL_FALLBACK = "llama-3.1-8b-instant"
 
 # --- Pipeline Feature Flags ---
 # These control conditional execution of expensive pipeline stages

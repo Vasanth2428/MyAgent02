@@ -128,7 +128,7 @@ def load_benchmark_dataset(path: str = None) -> List[BenchmarkQuery]:
     """
     if path:
         import json
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return [BenchmarkQuery(**item) for item in data]
     return RAG_BENCHMARKS.copy()

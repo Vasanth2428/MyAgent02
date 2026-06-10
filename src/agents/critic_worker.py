@@ -73,7 +73,18 @@ Analyze and output:
         safe_response = validate_tool_output(response.content)
         print(f"[CRITIC WORKER] Critique analysis complete.")
         
-        updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Fact-Check Analysis:\n{safe_response}"
+        retry_count = state.get("critic_retry_count", 0)
+        
+        if "RETRY_REQUIRED" in safe_response:
+            if retry_count >= 2:
+                # Remove the RETRY_REQUIRED token and append failure message
+                safe_response = safe_response.replace("RETRY_REQUIRED", "").strip()
+                safe_response += "\n[Max validation retry limit reached. Verification failed after multiple attempts. Proceeding without further retries.]"
+                updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Verification failed repeatedly. Aborting corrections to prevent infinite loop.\nFact-Check:\n{safe_response}"
+            else:
+                updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Fact-Check Analysis:\n{safe_response}"
+        else:
+            updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Fact-Check Analysis:\n{safe_response}"
         
         state_update = {
             "messages": [AIMessage(content=safe_response, name="critic_worker")],
@@ -81,13 +92,15 @@ Analyze and output:
             "worker_complete": {"critic_worker": True},
             "worker_outputs": {"critic_worker": safe_response},
             "worker_type": "critic_worker",
-            "next_agent": "supervisor"
+            "next_agent": "supervisor",
+            "critic_retry_count": retry_count
         }
         
-        if "RETRY_REQUIRED" in safe_response:
-            print("[CRITIC WORKER] Hallucination detected! Forcing supervisor retry.")
+        if "RETRY_REQUIRED" in safe_response and retry_count < 2:
+            print(f"[CRITIC WORKER] Hallucination detected! Forcing supervisor retry (retry {retry_count + 1}/2).")
             current_plan = state.get("plan", [])
             state_update["plan"] = current_plan + ["FIX ERROR: Review critic feedback and dispatch a worker to find the correct information."]
+            state_update["critic_retry_count"] = retry_count + 1
             
         return state_update
     except Exception as e:

@@ -488,5 +488,79 @@ class TestPipelineConfig(unittest.TestCase):
         self.assertFalse(config.should_use_full_pipeline(0.9))
 
 
+class TestRetrievalServiceRRF(unittest.TestCase):
+    """Tests that the RetrievalService uses Reciprocal Rank Fusion (RRF) correctly."""
+
+    def test_rrf_ranking_logic(self):
+        from src.core.services.retrieval_service import RetrievalService
+        
+        mock_retriever = MagicMock()
+        
+        # We query with 2 variations: Q1 and Q2.
+        # docB is ranked 2nd in Q1, and 1st in Q2.
+        # docA is ranked 1st in Q1, not in Q2.
+        # docC is ranked 2nd in Q2, not in Q1.
+        def mock_retrieve(q, top_k, source_filter=None):
+            if q == "Q1":
+                return [
+                    {"text": "docA", "score": 0.95},
+                    {"text": "docB", "score": 0.92}
+                ], 0.1, 0.2
+            elif q == "Q2":
+                return [
+                    {"text": "docB", "score": 0.90},
+                    {"text": "docC", "score": 0.88}
+                ], 0.1, 0.2
+            return [], 0.0, 0.0
+
+        mock_retriever.retrieve.side_effect = mock_retrieve
+        service = RetrievalService(mock_retriever)
+        
+        # Run sync retrieve
+        results, _, _, _ = service.retrieve(["Q1", "Q2"], top_k=2)
+        
+        # Verify that docB is ranked first due to RRF score accumulation
+        self.assertEqual(results[0]["text"], "docB")
+        self.assertEqual(results[1]["text"], "docA")
+        self.assertEqual(results[2]["text"], "docC")
+        
+        # Verify rrf_score is populated
+        self.assertIn("rrf_score", results[0])
+        self.assertGreater(results[0]["rrf_score"], results[1]["rrf_score"])
+
+    @patch('asyncio.to_thread')
+    def test_rrf_ranking_logic_async(self, mock_to_thread):
+        from src.core.services.retrieval_service import RetrievalService
+        
+        mock_retriever = MagicMock()
+        
+        async def mock_to_thread_impl(func, q, *args, **kwargs):
+            if q == "Q1":
+                return [
+                    {"text": "docA", "score": 0.95},
+                    {"text": "docB", "score": 0.92}
+                ], 0.1, 0.2
+            elif q == "Q2":
+                return [
+                    {"text": "docB", "score": 0.90},
+                    {"text": "docC", "score": 0.88}
+                ], 0.1, 0.2
+            return [], 0.0, 0.0
+            
+        mock_to_thread.side_effect = mock_to_thread_impl
+        service = RetrievalService(mock_retriever)
+        
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            results, _, _, _ = loop.run_until_complete(service.retrieve_async(["Q1", "Q2"], top_k=2))
+        finally:
+            loop.close()
+            
+        self.assertEqual(results[0]["text"], "docB")
+        self.assertEqual(results[1]["text"], "docA")
+        self.assertEqual(results[2]["text"], "docC")
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main()

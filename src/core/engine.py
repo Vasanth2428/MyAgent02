@@ -639,7 +639,12 @@ class RAGContextEngine:
                 "current_task": "",
                 "worker_complete": {},
                 "worker_outputs": {},
-                "parallel_tasks": []
+                "parallel_tasks": [],
+                "critic_retry_count": 0,
+                "waiting_for_approval": False,
+                "approval_filepath": "",
+                "approval_tool": "",
+                "pending_file_approvals": {}
             }
             
             if hasattr(self.multi_agent_checkpointer, "aget_tuple"):
@@ -872,7 +877,12 @@ class RAGContextEngine:
             "current_task": "",
             "worker_complete": {},
             "worker_outputs": {},
-            "parallel_tasks": []
+            "parallel_tasks": [],
+            "critic_retry_count": 0,
+            "waiting_for_approval": False,
+            "approval_filepath": "",
+            "approval_tool": "",
+            "pending_file_approvals": {}
         }
         
         actions_taken = []
@@ -896,6 +906,13 @@ class RAGContextEngine:
             async for event in get_stream():
                 for node_name, state_delta in event.items():
                     yield {"event": "node_start", "node": node_name}
+                    
+                    # Check if this is coding_worker waiting for approval - emit blocked_tool before workflow ends
+                    if node_name == "coding_worker_node" and state_delta.get("waiting_for_approval"):
+                        approval_filepath = state_delta.get("approval_filepath", "")
+                        approval_tool = state_delta.get("approval_tool", "")
+                        yield {"event": "blocked_tool", "filepath": approval_filepath, "tool": approval_tool}
+                        yield {"event": "done", "stats": {}}  # Signal completion so UI can render
                     
                     if node_name == "supervisor_node":
                         llm_call_count += 1
@@ -953,6 +970,9 @@ class RAGContextEngine:
                         worker_type = state_delta.get("worker_type", "")
                         if not worker_type:
                             worker_type = node_name.replace("_node", "")
+                        
+                        # Note: blocked_tool is already emitted at node_start level for coding_worker
+                        
                         response = ""
                         if "worker_outputs" in state_delta and worker_type:
                             response = state_delta["worker_outputs"].get(worker_type, "")
@@ -1162,10 +1182,39 @@ class RAGContextEngine:
         yield {"event": "thought", "text": "Generating final grounded answer from compressed context..."}
         
         accumulated_response = ""
-        async for chunk in self._phase_generate_stream_async(query, final_context, latencies):
-            if chunk["event"] == "answer_chunk":
-                accumulated_response += chunk["text"]
-            yield chunk
+        queue = asyncio.Queue()
+        
+        def on_retry(attempt, delay, exc):
+            msg = f"[Rate Limit / API Error] Attempt {attempt} failed: {type(exc).__name__}. Retrying in {delay:.2f}s."
+            queue.put_nowait({"event": "thought", "text": msg})
+            
+        self.llm_service.retry_callback = on_retry
+        
+        async def run_generation():
+            try:
+                async for chunk in self._phase_generate_stream_async(query, final_context, latencies):
+                    await queue.put(chunk)
+            except Exception as e:
+                await queue.put({"event": "error", "message": str(e)})
+            finally:
+                await queue.put(None)
+                
+        gen_task = asyncio.create_task(run_generation())
+        
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                if event.get("event") == "answer_chunk":
+                    accumulated_response += event["text"]
+                yield event
+        finally:
+            self.llm_service.retry_callback = None
+            try:
+                gen_task.cancel()
+            except Exception:
+                pass
 
         # Persist interaction
         self.save_memory(session_id, query, "user")
@@ -1223,3 +1272,4 @@ class RAGContextEngine:
     def close(self):
         """Cleanup resources."""
         self.retriever.close()
+

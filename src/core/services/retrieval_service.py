@@ -42,7 +42,7 @@ class RetrievalService:
             source_filter: Optional filter to only search specific documents
             
         Returns:
-            - List of unique document results, sorted by relevance
+            - List of unique document results, sorted by relevance (using Reciprocal Rank Fusion)
             - Embedding generation time in ms
             - Database search time in ms
             - Total time in ms
@@ -50,12 +50,14 @@ class RetrievalService:
         t = time.time()
         logger.info("[P2: RETRIEVAL] Searching for relevant documents...")
         candidates_by_text = {}  # Track unique documents by their text content
+        rrf_scores = {}
+        k_rrf = 60
         embed_total = 0.0
         db_total = 0.0
 
         for q in search_queries:
             retrieved, embed_lat, db_lat = self.retriever.retrieve(q, top_k=top_k, source_filter=source_filter)
-            for r in retrieved:
+            for rank, r in enumerate(retrieved, 1):
                 text = r["text"]
                 score = r.get("score", 0.0)
                 # Keep the highest-scoring version if we see the same text twice
@@ -64,11 +66,18 @@ class RetrievalService:
                 else:
                     if score > candidates_by_text[text].get("score", 0.0):
                         candidates_by_text[text]["score"] = score
-                embed_total += embed_lat
-                db_total += db_lat
+                
+                # Accumulate RRF rank score
+                rrf_scores[text] = rrf_scores.get(text, 0.0) + (1.0 / (k_rrf + rank))
+            embed_total += embed_lat
+            db_total += db_lat
 
-        # Sort by score and limit to MAX_CANDIDATES
-        sorted_candidates = sorted(candidates_by_text.values(), key=lambda x: x.get("score", 0.0), reverse=True)
+        # Add RRF score to metadata
+        for text, candidate in candidates_by_text.items():
+            candidate["rrf_score"] = rrf_scores[text]
+
+        # Sort by RRF score and limit to MAX_CANDIDATES
+        sorted_candidates = sorted(candidates_by_text.values(), key=lambda x: x.get("rrf_score", 0.0), reverse=True)
         results = sorted_candidates[:MAX_CANDIDATES]
 
         logger.info(f" -> Found {len(results)} unique relevant document chunks.")
@@ -89,7 +98,7 @@ class RetrievalService:
             source_filter: Optional filter to only search specific documents
             
         Returns:
-            - List of unique document results, sorted by relevance
+            - List of unique document results, sorted by relevance (using Reciprocal Rank Fusion)
             - Embedding generation time in ms
             - Database search time in ms
             - Total time in ms
@@ -107,11 +116,13 @@ class RetrievalService:
         query_results = await asyncio.gather(*tasks)
 
         candidates_by_text = {}
+        rrf_scores = {}
+        k_rrf = 60
         embed_total = 0.0
         db_total = 0.0
 
         for retrieved, embed_lat, db_lat in query_results:
-            for r in retrieved:
+            for rank, r in enumerate(retrieved, 1):
                 text = r["text"]
                 score = r.get("score", 0.0)
                 if text not in candidates_by_text:
@@ -119,10 +130,15 @@ class RetrievalService:
                 else:
                     if score > candidates_by_text[text].get("score", 0.0):
                         candidates_by_text[text]["score"] = score
-                embed_total += embed_lat
-                db_total += db_lat
+                
+                rrf_scores[text] = rrf_scores.get(text, 0.0) + (1.0 / (k_rrf + rank))
+            embed_total += embed_lat
+            db_total += db_lat
 
-        sorted_candidates = sorted(candidates_by_text.values(), key=lambda x: x.get("score", 0.0), reverse=True)
+        for text, candidate in candidates_by_text.items():
+            candidate["rrf_score"] = rrf_scores[text]
+
+        sorted_candidates = sorted(candidates_by_text.values(), key=lambda x: x.get("rrf_score", 0.0), reverse=True)
         results = sorted_candidates[:MAX_CANDIDATES]
 
         logger.info(f" -> Found {len(results)} unique relevant document chunks (searched in parallel).")

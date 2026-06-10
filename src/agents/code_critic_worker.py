@@ -118,17 +118,27 @@ def code_critic_worker_node(state: dict) -> dict:
             output_lines.append("No issues detected.")
         
         is_invalid = not report.valid or any(f.severity.lower() == "critical" for f in report.findings)
+        retry_count = state.get("critic_retry_count", 0)
+        
         if is_invalid:
-            output_lines.append("\nRETRY_REQUIRED")
+            if retry_count < 2:
+                output_lines.append("\nRETRY_REQUIRED")
+            else:
+                output_lines.append("\n[Max validation retry limit reached. Verification failed after multiple attempts. Proceeding without further retries.]")
              
         final_text = "\n".join(output_lines)
     except Exception as e:
         logger.error(f"Error executing critic model call: {e}")
         final_text = f"Error during Code Critic model execution: {e}"
         is_invalid = False
+        retry_count = state.get("critic_retry_count", 0)
 
     logger.info("Code Critic Worker execution completed.")
-    updated_scratchpad = scratchpad + f"\n- [Code Critic]: Code validation report:\n{final_text}"
+    
+    if is_invalid and retry_count >= 2:
+        updated_scratchpad = scratchpad + f"\n- [Code Critic]: Verification failed repeatedly. Aborting corrections to prevent infinite loop.\nFindings:\n{final_text}"
+    else:
+        updated_scratchpad = scratchpad + f"\n- [Code Critic]: Code validation report:\n{final_text}"
     
     state_update = {
         "messages": [AIMessage(content=final_text, name="code_critic_worker")],
@@ -136,12 +146,14 @@ def code_critic_worker_node(state: dict) -> dict:
         "worker_complete": {"code_critic_worker": True},
         "worker_outputs": {"code_critic_worker": final_text},
         "worker_type": "code_critic_worker",
-        "next_agent": "supervisor"
+        "next_agent": "supervisor",
+        "critic_retry_count": retry_count
     }
     
-    if is_invalid:
-        logger.info("[CODE CRITIC WORKER] Critical issue detected! Forcing supervisor retry.")
+    if is_invalid and retry_count < 2:
+        logger.info(f"[CODE CRITIC WORKER] Critical issue detected! Forcing supervisor retry (retry {retry_count + 1}/2).")
         current_plan = state.get("plan", [])
         state_update["plan"] = current_plan + ["FIX ERROR: Review code critic feedback and modify files to correct the issues."]
+        state_update["critic_retry_count"] = retry_count + 1
         
     return state_update

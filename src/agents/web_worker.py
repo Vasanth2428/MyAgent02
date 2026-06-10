@@ -13,11 +13,14 @@ Structure responses with headers, bullet points, and clear formatting.
 """
 
 
+from src.core.config import WEB_WORKER_MODEL_PRIMARY, WEB_WORKER_MODEL_FALLBACK
+
 def get_reasoning_model():
     """Get the LLM model for complex reasoning via Groq."""
-    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
     api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    primary = ChatGroq(model=WEB_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
+    fallback = ChatGroq(model=WEB_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
+    return primary.with_fallbacks([fallback])
 
 
 def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:

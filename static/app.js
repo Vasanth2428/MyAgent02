@@ -754,6 +754,38 @@ form.addEventListener('submit', async (e) => {
                     inlineThinkingDetails.appendChild(line);
                     inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
                 }
+                else if (data.event === "blocked_tool") {
+                    // Show approval UI for blocked file operations
+                    addLog("File operation blocked pending approval: " + data.filepath, "WARNING");
+                    ensureAccordion();
+                    
+                    const approvalDiv = document.createElement("div");
+                    approvalDiv.className = "step-approval-log";
+                    approvalDiv.style.cssText = "margin-top: 10px; padding: 12px; background: rgba(251, 191, 36, 0.1); border: 1px solid orange; border-radius: 6px;";
+                    
+                    const approvalMsg = document.createElement("div");
+                    approvalMsg.innerHTML = "<span style=\"color: orange; font-weight: bold;\">⚠️ " + data.tool + " on '" + data.filepath + "'</span>";
+                    approvalDiv.appendChild(approvalMsg);
+                    
+                    const btnContainer = document.createElement("div");
+                    btnContainer.style.cssText = "display: flex; gap: 8px; margin-top: 8px;";
+                    
+                    const approveBtn = document.createElement("button");
+                    approveBtn.textContent = "Approve";
+                    approveBtn.style.cssText = "padding: 6px 12px; background: green; border: none; border-radius: 4px; color: #000; font-weight: bold; cursor: pointer;";
+                    approveBtn.onclick = function() { sendApproval(true, data.filepath, data.tool); };
+                    
+                    const rejectBtn = document.createElement("button");
+                    rejectBtn.textContent = "Reject";
+                    rejectBtn.style.cssText = "padding: 6px 12px; background: red; border: none; border-radius: 4px; color: #fff; font-weight: bold; cursor: pointer;";
+                    rejectBtn.onclick = function() { sendApproval(false, data.filepath, data.tool); };
+                    
+                    btnContainer.appendChild(approveBtn);
+                    btnContainer.appendChild(rejectBtn);
+                    approvalDiv.appendChild(btnContainer);
+                    inlineThinkingDetails.appendChild(approvalDiv);
+                    inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
+                }
                 else if (data.event === "state_change") {
                     addLog(`State: ${data.state}`, "SYSTEM");
                     if (mode !== "agentic") {
@@ -1052,6 +1084,29 @@ window.closeTelemetryModal = function() {
     telemetryModal.classList.remove('open');
 };
 
+// ---- Send Approval Function ----
+async function sendApproval(approved, filepath, tool) {
+    try {
+        const res = await fetch(API_BASE + '/approve_changes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: AppState.sid,
+                approve: approved
+            })
+        });
+        const data = await res.json();
+        if (approved) {
+            addLog('Changes approved and applied', 'SUCCESS');
+        } else {
+            addLog('Changes rejected', 'WARNING');
+        }
+    } catch (e) {
+        addLog('Failed to send approval: ' + e.message, 'ERROR');
+    }
+}
+
+
 // Close modal on click outside content card
 telemetryModal.addEventListener('click', (e) => {
     if (e.target === telemetryModal) {
@@ -1201,13 +1256,10 @@ if (hudToggleBtn && mainGrid) {
         hudToggleBtn.title = textVal;
     };
 
-    // Determine initial state based on window width
-    let isCollapsed = window.innerWidth <= 1200;
-    if (isCollapsed) {
-        mainGrid.classList.add('hud-collapsed');
-        updateButtonLabel(true, 'Show HUD');
-        hudToggleBtn.classList.add('hud-hidden-state');
-    }
+    // Start collapsed on all viewports by default
+    mainGrid.classList.add('hud-collapsed');
+    updateButtonLabel(true, 'Show HUD');
+    hudToggleBtn.classList.add('hud-hidden-state');
 
     hudToggleBtn.addEventListener('click', () => {
         const width = window.innerWidth;
@@ -1339,20 +1391,38 @@ if (input) {
     });
 }
 
-// ---- Mobile Right Drawer Auto-Close ----
-if (chatWindow && mainGrid) {
-    chatWindow.addEventListener('click', () => {
-        if (window.innerWidth <= 1200 && mainGrid.classList.contains('hud-visible')) {
+// ---- Right Drawer Auto-Close (Click Outside) ----
+document.addEventListener('click', (e) => {
+    const sidebarRight = document.querySelector('.sidebar-right');
+    const hudToggleBtn = document.getElementById('hud-toggle-btn');
+    if (!sidebarRight || !hudToggleBtn || !mainGrid) return;
+
+    // Check if sidebar is currently visible/expanded
+    const isResponsiveVisible = mainGrid.classList.contains('hud-visible');
+    const isDesktopExpanded = !mainGrid.classList.contains('hud-collapsed');
+
+    // If it's not open in any way, nothing to do
+    if (!isResponsiveVisible && !isDesktopExpanded) return;
+
+    // Check if the click target is inside the sidebar, the toggle button, or the telemetry modal
+    const clickedInsideSidebar = sidebarRight.contains(e.target);
+    const clickedToggleBtn = hudToggleBtn.contains(e.target);
+    const clickedModal = e.target.closest('#telemetry-modal') || e.target.closest('.telemetry-inspect-btn');
+
+    if (!clickedInsideSidebar && !clickedToggleBtn && !clickedModal) {
+        if (window.innerWidth <= 1200) {
             mainGrid.classList.remove('hud-visible');
-            const hudToggleBtn = document.getElementById('hud-toggle-btn');
-            if (hudToggleBtn) {
-                hudToggleBtn.classList.add('hud-hidden-state');
-                const label = hudToggleBtn.querySelector('span');
-                if (label) label.textContent = 'Show HUD';
-            }
+            hudToggleBtn.classList.add('hud-hidden-state');
+            hudToggleBtn.title = 'Show HUD';
+            addLog("System HUD hidden by clicking outside.", "SYSTEM");
+        } else {
+            mainGrid.classList.add('hud-collapsed');
+            hudToggleBtn.classList.add('hud-hidden-state');
+            hudToggleBtn.title = 'Show HUD';
+            addLog("System HUD collapsed by clicking outside.", "SYSTEM");
         }
-    });
-}
+    }
+});
 
 
 // ================================================================

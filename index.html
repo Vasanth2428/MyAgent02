@@ -23,7 +23,7 @@
         </div>
     </div>
 
-    <div class="main-grid">
+    <div class="main-grid hud-collapsed">
         <!-- CONVERSATION SIDEBAR -->
         <aside class="conversations-sidebar" id="conversations-sidebar">
             <div class="conv-header">
@@ -187,6 +187,7 @@
                     <button type="button" class="tab-btn active" data-tab="tab-telemetry">Telemetry</button>
                     <button type="button" class="tab-btn" data-tab="tab-logs">Diagnostics</button>
                     <button type="button" class="tab-btn" data-tab="tab-sources">Sources</button>
+                    <button type="button" class="tab-btn" data-tab="tab-graph">Agent Graph</button>
                 </div>
 
                 <!-- Tab Contents -->
@@ -201,7 +202,7 @@
                                 <div class="budget-progress-section">
                                     <div class="progress-labels">
                                         <span class="lbl-used">PROMPT: <strong id="token-used-val">0</strong> TKN</span>
-                                        <span class="lbl-limit">LIMIT: <strong id="token-limit-val-readout">4096</strong> TKN</span>
+                                        <span class="lbl-limit">LIMIT: <strong id="token-limit-val-readout">16384</strong> TKN</span>
                                     </div>
                                     <div class="progress-bar-container">
                                         <div id="token-progress-fill" class="progress-fill" style="width: 0%;"></div>
@@ -213,19 +214,19 @@
                                 <div class="slider-control-group">
                                     <div class="slider-labels">
                                         <span>Effective Window Limit</span>
-                                        <span class="slider-val-glow"><span id="context-limit-slider-val">4096</span> TKN</span>
+                                        <span class="slider-val-glow"><span id="context-limit-slider-val">16384</span> TKN</span>
                                     </div>
-                                    <input type="range" id="context-limit-slider" min="200" max="8192" value="4096" step="50" class="hud-slider">
+                                    <input type="range" id="context-limit-slider" min="200" max="131072" value="16384" step="500" class="hud-slider">
                                 </div>
 
                                 <!-- Presets -->
                                 <div class="preset-group">
                                     <span class="control-sublabel">Presets</span>
                                     <div class="preset-grid">
-                                        <button type="button" class="preset-btn pulse-warning" data-val="300">300 TKN (Simulate)</button>
-                                        <button type="button" class="preset-btn" data-val="800">800 TKN</button>
-                                        <button type="button" class="preset-btn" data-val="1500">1500 TKN</button>
-                                        <button type="button" class="preset-btn active" data-val="4096">4096 TKN</button>
+                                        <button type="button" class="preset-btn" data-val="300">300 TKN</button>
+                                        <button type="button" class="preset-btn" data-val="4096">4096 TKN</button>
+                                        <button type="button" class="preset-btn active" data-val="16384">16384 TKN</button>
+                                        <button type="button" class="preset-btn pulse-warning" data-val="65536">65536 TKN</button>
                                     </div>
                                 </div>
                             </div>
@@ -311,6 +312,101 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Tab 4: Agent Graph Visualization -->
+                    <div id="tab-graph" class="tab-content-panel">
+                        <div class="box box-graph">
+                            <div class="section-label">Cooperative Multi-Agent Graph</div>
+                            <div class="graph-container-wrapper">
+                                <div id="agent-graph-viz" class="agent-graph-viz">
+                                    <!-- Supervisor Node -->
+                                    <div class="graph-node-wrapper">
+                                        <div class="graph-node" id="graph-node-supervisor_node">
+                                            <div class="node-icon">📋</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Supervisor</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="graph-connector">↓</div>
+                                    
+                                    <!-- Workers Grid -->
+                                    <div class="graph-workers-grid">
+                                        <div class="graph-node" id="graph-node-rag_worker_node">
+                                            <div class="node-icon">📚</div>
+                                            <div class="node-text">
+                                                <div class="node-title">RAG Specialist</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-web_worker_node">
+                                            <div class="node-icon">🌐</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Web Search</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-utility_worker_node">
+                                            <div class="node-icon">⚙️</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Utility Special</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-scraper_worker_node">
+                                            <div class="node-icon">🕸️</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Web Scraper</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-coding_worker_node">
+                                            <div class="node-icon">💻</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Code Specialist</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-code_critic_worker_node">
+                                            <div class="node-icon">🛡️</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Code Critic</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-critic_worker_node">
+                                            <div class="node-icon">🔍</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Fact Critic</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                        <div class="graph-node" id="graph-node-report_worker_node">
+                                            <div class="node-icon">📝</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Report Special</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="graph-connector">↓</div>
+                                    
+                                    <!-- Synthesizer Node -->
+                                    <div class="graph-node-wrapper">
+                                        <div class="graph-node" id="graph-node-synthesizer_node">
+                                            <div class="node-icon">🎯</div>
+                                            <div class="node-text">
+                                                <div class="node-title">Synthesizer</div>
+                                                <div class="node-status">Idle</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                 </div>
             </div>
         </aside>

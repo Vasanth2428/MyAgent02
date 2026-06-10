@@ -1,9 +1,19 @@
 # Main entry point for multi-agent system.
 import os
+import sys
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 import logging
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path="../config/.env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MultiAgent.Main")
@@ -45,7 +55,7 @@ def run_query(query: str, thread_id: str = "default"):
     
     initial_state = {
         "messages": [HumanMessage(content=query)],
-        "next_agent": "FINISH",
+        "next_agent": "supervisor",
         "context_notes": [],
         "steps_remaining": 10,
         "final_answer": "",
@@ -54,7 +64,12 @@ def run_query(query: str, thread_id: str = "default"):
         "current_task": "",
         "worker_complete": {},
         "worker_outputs": {},
-        "parallel_tasks": []
+        "parallel_tasks": [],
+        "critic_retry_count": 0,
+        "waiting_for_approval": False,
+        "approval_filepath": "",
+        "approval_tool": "",
+        "pending_file_approvals": {}
     }
     
     

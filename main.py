@@ -427,7 +427,24 @@ async def approve_changes(request: ApprovalRequest):
                     checkpoint = rag.multi_agent_checkpointer.get_tuple(config)
                 
                 if checkpoint:
-                    current_scratchpad = checkpoint.checkpoint.get("scratchpad", "")
+                    current_scratchpad = ""
+                    if hasattr(rag, "multi_agent_graph") and rag.multi_agent_graph:
+                        try:
+                            if hasattr(rag.multi_agent_graph, "aget_state"):
+                                state_val = await rag.multi_agent_graph.aget_state(config)
+                                if state_val and state_val.values:
+                                    current_scratchpad = state_val.values.get("scratchpad", "")
+                            elif hasattr(rag.multi_agent_graph, "get_state"):
+                                state_val = rag.multi_agent_graph.get_state(config)
+                                if state_val and state_val.values:
+                                    current_scratchpad = state_val.values.get("scratchpad", "")
+                        except Exception as state_err:
+                            logger.warning(f"Failed to get state via graph state APIs: {state_err}")
+                            
+                    if not current_scratchpad and hasattr(checkpoint, "checkpoint") and checkpoint.checkpoint:
+                        channel_values = checkpoint.checkpoint.get("channel_values", {})
+                        current_scratchpad = channel_values.get("scratchpad", "")
+                        
                     new_scratchpad = current_scratchpad + f"\n{approval_token}"
                     
                     update_state = {
@@ -472,7 +489,7 @@ async def approve_changes(request: ApprovalRequest):
                     "worker_outputs": {"coding_worker": "User rejected file changes."}
                 }
                 if hasattr(rag.multi_agent_graph, "aupdate_state"):
-                    rag.multi_agent_graph.aupdate_state(config, update_state)
+                    await rag.multi_agent_graph.aupdate_state(config, update_state)
                 else:
                     rag.multi_agent_graph.update_state(config, update_state)
         except Exception:

@@ -138,3 +138,35 @@ def test_supervisor_planning_output():
         assert result["next_agent"] == "rag_worker"
         assert result["current_task"] == "Retrieve company revenue"
         assert result["steps_remaining"] == 9
+
+
+def test_supervisor_detects_human_approval():
+    """Test that supervisor detects human approval and appends the approval token to the scratchpad."""
+    state = {
+        "messages": [
+            HumanMessage(content="Write a new helper function"),
+            AIMessage(content="I want to modify the file but direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval."),
+            HumanMessage(content="Yes, please approve and apply it.") # User approves
+        ],
+        "plan": ["Write code"],
+        "scratchpad": "Direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval.",
+        "steps_remaining": 10
+    }
+    
+    from src.graph.supervisor import SupervisorDecision
+    mock_llm_response = SupervisorDecision(
+        plan=["Write code"],
+        next_agent="coding_worker",
+        current_task="Create helper.py"
+    )
+    
+    with patch("src.graph.supervisor.get_routing_model") as mock_get_model:
+        mock_model = Mock()
+        mock_model.invoke.return_value = mock_llm_response
+        mock_get_model.return_value = mock_model
+        
+        result = supervisor_node(state)
+        
+        # Verify approval token was successfully added to the scratchpad
+        assert "[APPROVED: workspace/helper.py]" in result["scratchpad"]
+

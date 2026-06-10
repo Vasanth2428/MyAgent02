@@ -444,8 +444,30 @@ def coding_worker_node(state: dict) -> dict:
             
             if tool_name in ["create_files", "modify_files", "delete_file"]:
                 filepath = tool_args.get("filepath", "")
-                approval_token = f"[APPROVED: {filepath}]"
-                if approval_token not in scratchpad:
+                
+                # Check for path-normalized approvals in scratchpad
+                from src.tools.coding_tools import _get_absolute_path
+                import re
+                
+                approved_paths = re.findall(r"\[APPROVED:\s*([^\]]+)\]", scratchpad)
+                approved_abs_paths = set()
+                for p in approved_paths:
+                    try:
+                        approved_abs_paths.add(os.path.realpath(_get_absolute_path(p.strip().strip("'\""))))
+                    except Exception:
+                        pass
+                
+                try:
+                    current_abs_path = os.path.realpath(_get_absolute_path(filepath))
+                except Exception:
+                    current_abs_path = None
+                    
+                is_approved = (
+                    f"[APPROVED: {filepath}]" in scratchpad or 
+                    (current_abs_path is not None and current_abs_path in approved_abs_paths)
+                )
+                
+                if not is_approved:
                     # Store pending approval in state for UI
                     pending_file_approvals = state.get("pending_file_approvals", {})
                     pending_file_approvals[filepath] = {"approved": False, "tool": tool_name, "args": tool_args}
@@ -455,7 +477,6 @@ def coding_worker_node(state: dict) -> dict:
                     observation = f"Approval required for {tool_name} on {filepath}. Please reply approve or yes to confirm."
                     print(f"  Blocked Tool: {tool_name} on {filepath} - Awaiting user approval.")
                     blocked_for_approval = (tool_name, filepath)
-                    completed = False
                     break
                 else:
                     tool_func = tools_map[tool_name]
@@ -493,7 +514,7 @@ def coding_worker_node(state: dict) -> dict:
     if completed:
         updated_scratchpad = scratchpad + f"\n- [Coding Worker]: {final_explanation}"
     else:
-        updated_scratchpad = scratchpad + f"\n- [Coding Worker]: Interrupted - {final_explanation}"
+        updated_scratchpad = scratchpad + f"\n- [Coding Worker]: Interrupted - execution limit reached: {final_explanation}"
 
     
     # If blocked for approval, set the waiting_for_approval state
@@ -505,6 +526,7 @@ def coding_worker_node(state: dict) -> dict:
             "worker_complete": {"coding_worker": False},
             "worker_outputs": {"coding_worker": observation},
             "worker_type": "coding_worker",
+            "next_agent": "supervisor",
             "waiting_for_approval": True,
             "approval_filepath": blocked_for_approval[1] if blocked_for_approval else "",
             "approval_tool": blocked_for_approval[0] if blocked_for_approval else ""

@@ -1,7 +1,10 @@
 # Configuration for multi-agent system.
 import os
 from typing import Optional
+from dotenv import load_dotenv
 
+# Load environment variables from config directory
+load_dotenv(dotenv_path="../config/.env")
 
 def get_env(key: str, default: Optional[str] = None) -> Optional[str]:
     """Get environment variable with default."""

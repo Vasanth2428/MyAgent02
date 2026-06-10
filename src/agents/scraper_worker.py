@@ -14,11 +14,38 @@ Keep your output structured, clean, and focus only on the facts related to the q
 """
 
 
+from src.core.config import SCRAPER_WORKER_MODEL_PRIMARY, SCRAPER_WORKER_MODEL_FALLBACK
+
 def get_reasoning_model():
     """Get the LLM model for complex reasoning via Groq."""
-    model_name = os.getenv("REASONING_MODEL", "llama-3.1-8b-instant")
     api_key = os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=model_name, temperature=0, api_key=api_key)
+    primary = ChatGroq(model=SCRAPER_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
+    fallback = ChatGroq(model=SCRAPER_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
+    return primary.with_fallbacks([fallback])
+
+
+def safe_truncate_text(text: str, max_chars: int = 4000) -> str:
+    """Truncates text up to max_chars without cutting mid-word or mid-sentence."""
+    if len(text) <= max_chars:
+        return text
+    
+    # Try to find a sentence/paragraph boundary near the end
+    # Look for last period, question mark, exclamation mark followed by space or newline
+    # within the last 500 characters of the limit.
+    slice_area = text[:max_chars]
+    boundaries = [m.start() for m in re.finditer(r'[.!?](\s+|\n|$)', slice_area)]
+    if boundaries:
+        # Get the latest boundary that is not too far back (e.g., within 500 chars of max_chars)
+        latest = boundaries[-1]
+        if max_chars - latest <= 500:
+            return text[:latest + 1]
+            
+    # Fallback to last whitespace/word boundary
+    last_space = slice_area.rfind(' ')
+    if last_space != -1 and max_chars - last_space <= 100:
+        return text[:last_space]
+        
+    return slice_area
 
 
 async def scraper_worker_node(state: dict, scraper_tool: callable = None) -> dict:
@@ -101,7 +128,7 @@ async def scraper_worker_node(state: dict, scraper_tool: callable = None) -> dic
         
         model = get_reasoning_model()
         
-        prompt_content = raw_content[:4000]
+        prompt_content = safe_truncate_text(raw_content, 4000)
         summary_prompt = (
             f"Please read the following scraped web page content from {url} and extract "
             f"all information relevant to the user inquiry: '{target_query}'\n\n"

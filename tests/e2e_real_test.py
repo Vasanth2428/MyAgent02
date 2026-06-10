@@ -6,6 +6,15 @@ No mocks. No synthetic data shortcuts.
 import sys
 import os
 
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 # Must be at top so all imports work
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -42,6 +51,10 @@ def post_query(question, session_id="e2e-test", mode="context_engine"):
         "mode": mode
     }, timeout=45)
     return resp
+
+if __name__ != "__main__":
+    import unittest
+    raise unittest.SkipTest("Skipping E2E test module during collection (run directly via python tests/e2e_real_test.py)")
 
 # ----------------------------------------------------------------
 # 1. Health check
@@ -293,7 +306,7 @@ report_dir = os.path.join(os.path.dirname(__file__), "results")
 os.makedirs(report_dir, exist_ok=True)
 report_path = os.path.join(report_dir, "e2e_real_test_report.md")
 from datetime import datetime
-with open(report_path, "w") as f:
+with open(report_path, "w", encoding="utf-8") as f:
     f.write(f"# Real End-to-End System Test\n\n")
     f.write(f"*Generated on: {datetime.now().isoformat()}*\n\n")
     f.write(f"**Overall: {'ALL PASS' if failed == 0 else f'{failed}/{total} FAILURES'}**\n\n")

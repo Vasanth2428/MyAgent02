@@ -129,6 +129,8 @@ class WeaviateRetriever:
             self.collection = self.client.collections.get("RAGKnowledge")
             self.code_collection = self.client.collections.get("RAGCode")
 
+        self.local_docs = []
+        self.local_code_chunks = []
         self.alpha = HYBRID_ALPHA_DEFAULT
 
     def _get_embedding_model(self):
@@ -178,9 +180,18 @@ class WeaviateRetriever:
         Returns:
             List of indexed document UUIDs for tracking.
         """
+        # Local fallback store
+        for doc in docs:
+            self.local_docs.append({
+                "text": doc,
+                "source": source,
+                "tags": tags or [],
+                "document_id": document_id or str(uuid.uuid4())
+            })
+            
         if not self._connected:
-            logger.warning(f"Weaviate not connected - skipping document indexing for: {source}")
-            return []
+            logger.warning(f"Weaviate not connected - saved document to local memory for: {source}")
+            return [d["document_id"] for d in self.local_docs[-len(docs):]]
 
         t_start = time.time()
         
@@ -254,8 +265,28 @@ class WeaviateRetriever:
             Tuple of (results, embed_latency_ms, db_search_latency_ms)
         """
         if not self._connected:
-            logger.warning(f"Weaviate not connected - returning empty results for query: {query[:30]}...")
-            return [], 0.0, 0.0
+            logger.warning(f"Weaviate not connected - using local fallback search")
+            keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
+            results = []
+            for doc in self.local_docs:
+                if source_filter and doc["source"] != source_filter:
+                    continue
+                score = 0.0
+                text_lower = doc["text"].lower()
+                for kw in keywords:
+                    if kw in text_lower:
+                        score += 1.0
+                if score > 0 or not keywords:
+                    results.append({
+                        "text": doc["text"],
+                        "source": doc["source"],
+                        "tags": doc["tags"],
+                        "score": score / (len(keywords) if keywords else 1),
+                        "content_hash": "",
+                        "document_id": doc["document_id"]
+                    })
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:top_k], 0.0, 0.0
 
         t_start = time.time()
         query_vector = self.embedding_model.encode(query).tolist()
@@ -301,7 +332,7 @@ class WeaviateRetriever:
     def get_count(self) -> int:
         """Returns the total number of objects in the RAGKnowledge collection."""
         if not self._connected:
-            return 0
+            return len(self.local_docs)
         try:
             def _aggregate():
                 res = self.collection.aggregate.over_all(total_count=True)
@@ -314,9 +345,12 @@ class WeaviateRetriever:
         """
         Indexes code chunks into Weaviate.
         """
+        for chunk in chunks:
+            self.local_code_chunks.append(chunk)
+            
         if not self._connected or not self.client or not self.code_collection:
-            logger.warning("Weaviate not connected - skipping code indexing.")
-            return []
+            logger.warning("Weaviate not connected - skipping code indexing (stored locally).")
+            return [str(uuid.uuid4()) for _ in chunks]
 
         texts = [chunk["text"] for chunk in chunks]
         embeddings = self.embedding_model.encode(texts)
@@ -354,7 +388,22 @@ class WeaviateRetriever:
         Searches the RAGCode collection using hybrid search.
         """
         if not self._connected or not self.client or not self.code_collection:
-            return []
+            logger.warning("Weaviate not connected - using local fallback search for code chunks")
+            keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
+            results = []
+            for chunk in self.local_code_chunks:
+                score = 0.0
+                text_lower = chunk["text"].lower()
+                for kw in keywords:
+                    if kw in text_lower:
+                        score += 1.0
+                if score > 0 or not keywords:
+                    results.append({
+                        "chunk": chunk,
+                        "score": score
+                    })
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return [item["chunk"] for item in results[:limit]]
 
         query_vector = self.embedding_model.encode([query])[0].tolist()
         def _query_db():

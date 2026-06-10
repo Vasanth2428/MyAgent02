@@ -61,6 +61,39 @@ def supervisor_node(state: dict) -> dict:
     
     # Bounded execution loop: decrement steps
     new_steps = steps - 1
+
+    import re
+    blocked_files = re.findall(r"execution of '[^']+' for '([^']+)' is blocked", scratchpad)
+    blocked_files.extend(re.findall(r"Blocked awaiting approval for \w+ on ([^\s]+)", scratchpad))
+    
+    # Check user's latest message for approval
+    user_approved = False
+    latest_user_message = ""
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            latest_user_message = msg.get("content", "").lower()
+            break
+        elif hasattr(msg, "content") and (msg.__class__.__name__ == "HumanMessage" or getattr(msg, "type", "") == "human"):
+            latest_user_message = msg.content.lower()
+            break
+
+    # Common approval words/phrases
+    approval_phrases = ["approve", "yes", "ok", "go ahead", "apply", "proceed", "yep", "sure"]
+    if any(phrase in latest_user_message for phrase in approval_phrases):
+        user_approved = True
+
+    if blocked_files and user_approved:
+        # User has approved! Append approval token to scratchpad
+        new_approvals = []
+        for filepath in blocked_files:
+            token = f"[APPROVED: {filepath}]"
+            if token not in scratchpad:
+                new_approvals.append(token)
+                
+        if new_approvals:
+            approval_str = " ".join(new_approvals)
+            scratchpad += f"\n- [SYSTEM]: User has approved changes: {approval_str}"
+            logger.info(f"Human-in-the-Loop: Approved file(s): {blocked_files}")
     
     # Formulate current blackboard context
     blackboard_context = f"""

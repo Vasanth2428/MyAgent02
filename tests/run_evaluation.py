@@ -61,11 +61,14 @@ def run_retrieval_evaluation():
     mock_llm = MagicMock()
     evaluator = RAGEvaluator(mock_retriever, mock_llm)
 
-    # Mock retrieval results
-    mock_retriever.retrieve.return_value = [
-        {"text": "Paris is the capital of France.", "score": 0.95},
-        {"text": "The Eiffel Tower is in Paris.", "score": 0.85},
-    ]
+    mock_retriever.retrieve.return_value = (
+        [
+            {"text": "Paris is the capital of France.", "score": 0.95},
+            {"text": "The Eiffel Tower is in Paris.", "score": 0.85},
+        ],
+        0.95,
+        0.95
+    )
 
     metrics = evaluator.evaluate_retrieval("capital", "Paris capital France", top_k=5)
 
