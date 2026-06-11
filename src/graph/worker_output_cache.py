@@ -1,0 +1,68 @@
+import time
+import logging
+from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger("MultiAgent.WorkerCache")
+
+_IN_MEMORY_CACHE: Dict[str, Dict] = {}
+_CACHE_TTL_SECONDS = 3600
+
+
+def _evict_stale() -> None:
+    cutoff = time.time() - _CACHE_TTL_SECONDS
+    stale = [key for key, value in _IN_MEMORY_CACHE.items() if value.get("timestamp", 0) < cutoff]
+    for key in stale:
+        del _IN_MEMORY_CACHE[key]
+
+
+def store_worker_output(worker_name: str, output: str, *, session_id: Optional[str] = None) -> Tuple[str, str]:
+    cache_id = f"wo_{worker_name}_{abs(hash(output)) & 0xFFFFFFFF:x}"
+    _IN_MEMORY_CACHE[cache_id] = {
+        "text": output,
+        "worker": worker_name,
+        "session_id": session_id,
+        "timestamp": time.time(),
+    }
+    _evict_stale()
+    summary = output[:160].replace("\n", " ") + ("..." if len(output) > 160 else "")
+    return cache_id, summary
+
+
+def get_worker_output(cache_id: str) -> str:
+    entry = _IN_MEMORY_CACHE.get(cache_id)
+    if entry is None:
+        return ""
+    return entry.get("text", "")
+
+
+def get_worker_output_summary(cache_id: str) -> str:
+    text = get_worker_output(cache_id)
+    return text[:160].replace("\n", " ") + ("..." if len(text) > 160 else "")
+
+
+def clear_session(session_id: Optional[str]) -> None:
+    if session_id is None:
+        return
+    stale = [key for key, value in _IN_MEMORY_CACHE.items() if value.get("session_id") == session_id]
+    for key in stale:
+        del _IN_MEMORY_CACHE[key]
+
+
+class ScratchpadStore:
+    def __init__(self) -> None:
+        self._store: Dict[str, str] = {}
+
+    def append(self, worker_name: str, output: str) -> str:
+        cache_id, summary = store_worker_output(worker_name, output, session_id=None)
+        self._store[worker_name] = f"{worker_name}:{summary}"
+        return cache_id
+
+    def get_compact_view(self) -> str:
+        return "\n".join([value for value in self._store.values()])
+
+    def clear(self) -> None:
+        self._store.clear()
+
+
+_GLOBAL_SCRATCHPAD = ScratchpadStore()
+GLOBAL_WORKER_CACHE = _IN_MEMORY_CACHE

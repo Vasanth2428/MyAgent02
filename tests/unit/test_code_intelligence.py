@@ -242,7 +242,11 @@ def test_critic_node_retry_required(mock_service, mock_get_critic):
     res = code_critic_worker_node(state)
     assert res["worker_complete"]["code_critic_worker"] is True
     assert "RETRY_REQUIRED" in res["worker_outputs"]["code_critic_worker"]
-    assert "FIX ERROR" in res["plan"][-1]
+    # Check that the plan was updated with a fix instruction that includes the critic feedback
+    assert res["plan"][-1].startswith("FIX: ")
+    # The fix instruction should contain the symbol name and file location from the critic finding
+    assert "missing_func" in res["plan"][-1]
+    assert "main.py" in res["plan"][-1]
 
 
 def test_security_audit():

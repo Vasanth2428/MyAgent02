@@ -37,42 +37,45 @@ def _is_private_ip(ip_str: str) -> bool:
         return False
 
 
-def _validate_url_for_ssrf(url: str) -> Tuple[bool, str]:
+def _validate_url_for_ssrf(url: str) -> Tuple[bool, str, Optional[str]]:
     """
     Validates URL for SSRF protection.
-    Returns (is_valid, error_message).
+    Returns (is_valid, error_message, pinned_ip).
     Blocks private IPs, localhost, and internal network ranges.
+    The pinned_ip is returned so callers can pin the connection to it,
+    preventing DNS rebinding attacks (SEC-02: TOCTOU fix).
     """
     from urllib.parse import urlparse
     import socket
-    
+
     if not url or not isinstance(url, str):
-        return False, "Empty or invalid URL"
-    
+        return False, "Empty or invalid URL", None
+
     parsed = urlparse(url)
     hostname = parsed.hostname
-    
+
     if not hostname:
-        return False, "No hostname in URL"
-    
-    # Block obvious internal hostnames
+        return False, "No hostname in URL", None
+
     blocked_hostnames = {'localhost', '127.0.0.1', '0.0.0.0', '::1', 'localhost.localdomain'}
     if hostname.lower() in blocked_hostnames:
-        return False, f"Blocked internal hostname: {hostname}"
-    
-    # Resolve hostname and check IP
+        return False, f"Blocked internal hostname: {hostname}", None
+
+    first_public_ip = None
     try:
-        resolved_ips = socket.getaddrinfo(hostname, parsed.port or 80)
-        for family, _, _, _, sockaddr in resolved_ips:
+        addrinfos = socket.getaddrinfo(hostname, parsed.port or 80)
+        for family, _, _, _, sockaddr in addrinfos:
             ip_str = sockaddr[0]
             if _is_private_ip(ip_str):
-                return False, f"Blocked private IP: {ip_str}"
+                return False, f"Blocked private IP: {ip_str}", None
+            if first_public_ip is None:
+                first_public_ip = ip_str
     except socket.gaierror:
-        return False, f"Could not resolve hostname: {hostname}"
+        return False, f"Could not resolve hostname: {hostname}", None
     except Exception as e:
-        return False, f"DNS validation error: {e}"
-    
-    return True, ""
+        return False, f"DNS validation error: {e}", None
+
+    return True, "", first_public_ip
 
 async def _get_aiohttp_session() -> aiohttp.ClientSession:
     global _aiohttp_session
@@ -132,8 +135,8 @@ def scrape_web_page(url: str, max_chars: int = 6000) -> str:
     if not url:
         return "Error: Scrape request received an empty URL."
 
-    # SSRF protection
-    is_valid, error_msg = _validate_url_for_ssrf(url)
+    # SSRF protection (SEC-02: returns pinned IP to prevent DNS rebinding)
+    is_valid, error_msg, pinned_ip = _validate_url_for_ssrf(url)
     if not is_valid:
         logger.warning(f"SSRF blocked: {error_msg}")
         return f"Error: {error_msg}"
@@ -147,7 +150,14 @@ def scrape_web_page(url: str, max_chars: int = 6000) -> str:
 
     try:
         logger.info(f"Crawling web page (sync): {url}")
-        response = requests.get(url, headers=headers, timeout=10.0)
+        from urllib.parse import urlparse, urlunparse
+        if pinned_ip:
+            parsed_url = urlparse(url)
+            pinned_url = urlunparse(parsed_url._replace(netloc=f"{pinned_ip}:{parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)}"))
+            headers["Host"] = parsed_url.hostname
+            response = requests.get(pinned_url, headers=headers, timeout=10.0, verify=parsed_url.scheme == 'https')
+        else:
+            response = requests.get(url, headers=headers, timeout=10.0)
         response.raise_for_status()
 
         content_type = response.headers.get("Content-Type", "").lower()
@@ -209,7 +219,7 @@ async def scrape_web_page_async(url: str, max_chars: int = 6000) -> str:
         return "Error: Scrape request received an empty URL."
 
     # SSRF protection
-    is_valid, error_msg = _validate_url_for_ssrf(url)
+    is_valid, error_msg, pinned_ip = _validate_url_for_ssrf(url)
     if not is_valid:
         logger.warning(f"SSRF blocked: {error_msg}")
         return f"Error: {error_msg}"
@@ -225,18 +235,33 @@ async def scrape_web_page_async(url: str, max_chars: int = 6000) -> str:
     try:
         logger.info(f"Crawling web page (async): {url}")
         session = await _get_aiohttp_session()
-        async with session.get(url, headers=headers) as resp:
-            response = resp
-            response.raise_for_status()
-
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "text/html" not in content_type:
-                if "text/plain" in content_type:
-                    text = await response.text()
-                    return text[:max_chars]
-                return f"Error: Unsupported content-type '{content_type}'. Only HTML pages can be scraped."
-
-            html = await response.text()
+        from urllib.parse import urlparse, urlunparse
+        if pinned_ip:
+            parsed_url = urlparse(url)
+            pinned_url = urlunparse(parsed_url._replace(netloc=f"{pinned_ip}:{parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)}"))
+            headers["Host"] = parsed_url.hostname
+            # Use ssl=False to ignore hostname mismatch when connecting directly to IP
+            async with session.get(pinned_url, headers=headers, ssl=False) as resp:
+                response = resp
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "text/html" not in content_type:
+                    if "text/plain" in content_type:
+                        text = await response.text()
+                        return text[:max_chars]
+                    return f"Error: Unsupported content-type '{content_type}'. Only HTML pages can be scraped."
+                html = await response.text()
+        else:
+            async with session.get(url, headers=headers) as resp:
+                response = resp
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "text/html" not in content_type:
+                    if "text/plain" in content_type:
+                        text = await response.text()
+                        return text[:max_chars]
+                    return f"Error: Unsupported content-type '{content_type}'. Only HTML pages can be scraped."
+                html = await response.text()
 
         parser = HTMLTextExtractor()
         parser.feed(html)
@@ -259,3 +284,4 @@ async def scrape_web_page_async(url: str, max_chars: int = 6000) -> str:
     except Exception as e:
         logger.error(f"Unexpected error scraping URL: {url} - {e}")
         return f"Error: Failed to fetch or parse page: {type(e).__name__}: {e}"
+

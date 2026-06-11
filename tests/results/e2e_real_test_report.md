@@ -1,6 +1,6 @@
 # Real End-to-End System Test
 
-*Generated on: 2026-06-06T03:08:03.417093*
+*Generated on: 2026-06-11T10:15:31.125143*
 
 **Overall: ALL PASS**
 
@@ -8,36 +8,36 @@
 |---|---|---|
 | Server responding | PASS |  |
 | Engine online | PASS | status=online |
-| Documents indexed | PASS | count=898 |
-| CPU readable | PASS | cpu=10.0% |
+| Documents indexed | PASS | count=2 |
+| CPU readable | PASS | cpu=14.8% |
 | Request succeeded | PASS | status=200 |
-| Got a non-empty answer | PASS | len=649 chars |
-| Answer mentions core concepts | PASS | Answer: The 1% rule in Atomic Habits refers to the idea that small, incremental  |
+| Got a non-empty answer | PASS | len=284 chars |
+| Answer mentions core concepts | PASS | Answer: I couldn't find any information about the 1% rule in Atomic Habits or ho |
 | LLM used context (not hallucinating) | PASS | retrieved_context present: True |
-| Latency acceptable (<20s) | PASS | latency=3.98s |
-| Query count incremented | PASS | queries=1 |
+| Latency acceptable (<20s) | PASS | latency=5.77s |
+| Query count incremented | PASS | queries=7 |
 | First IKIGAI query succeeded | PASS |  |
-| Answer mentions Ikigai concept | PASS | snippet: Unfortunately, the provided context does not explicitly mention the fou |
+| Answer mentions Ikigai concept | PASS | snippet: Unfortunately, there is no information provided about the Japanese conc |
 | Follow-up query succeeded | PASS |  |
-| Follow-up answer is non-empty | PASS | len=392 |
-| Follow-up references context | PASS | snippet: To discover what feels natural to you, ignore what you have been taught |
+| Follow-up answer is non-empty | PASS | len=213 |
+| Follow-up references context | PASS | snippet: Unfortunately, I don't have any information about the Japanese concept  |
 | History persisted in DB | PASS | history entries=4 |
 | SQL aggregation returns data | PASS | result snippet: | status | count | total |
 |--------|-------|-------|
-| Complete |
+| Shipped  |
 | Customer count query works | PASS | result: | total |
 |-------|
 | 8 | |
 | DROP blocked | PASS | response: Error: Only SELECT queries are permitted. The keyword 'DROP' is forbid |
 | UNION blocked | PASS | response: Error: Only SELECT queries are permitted. The keyword 'UNION' is forbi |
-| Web search returned results | PASS | count=3 |
-| Results have real URLs (not mock) | PASS | urls=['https://www.ibm.com/think/topics/retrieval-augmented-generat', 'https://w |
-| Results have real content | PASS | content lengths=[1375, 1022, 139] |
-| Latency under 10s | PASS | latency=1.70s |
+| Web search returned results | PASS | count=5 |
+| Results have real URLs (not mock) | PASS | urls=['https://www.itpro.com/technology/artificial-intelligence/wha', 'https://i |
+| Results have real content | PASS | content lengths=[145, 152, 150, 141, 151] |
+| Latency under 10s | PASS | latency=5.10s |
 | Create session | PASS | status=201 |
-| Session ID returned | PASS | sid=SID-6BFDBDCB |
+| Session ID returned | PASS | sid=SID-3785B746 |
 | List sessions works | PASS |  |
-| New session in list | PASS | session count=7 |
+| New session in list | PASS | session count=9 |
 | Rename session | PASS |  |
 | Rename persisted in DB | PASS | title=Renamed E2E Session |
 | Delete session | PASS |  |
@@ -46,4 +46,4 @@
 | Received streaming tokens | PASS | chunk_count=50 |
 | Assembled answer non-empty | PASS | len=256 |
 | Stream finished with done event | PASS |  |
-| Stream latency ok (<25s) | PASS | latency=2.92s |
+| Stream latency ok (<25s) | PASS | latency=3.16s |

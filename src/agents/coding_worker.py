@@ -352,11 +352,70 @@ def get_coding_model(task: str = ""):
         logger.info(f"Binding all {len(tools)} tools to coding worker (complex query detected).")
     else:
         active_tools = [read_files, search_code, create_files, modify_files, list_files, run_safe_commands, delete_file]
-        logger.info(f"Binding core {len(active_tools)} tools to coding worker (simple query detected).")
-        
     primary = ChatGroq(model=CODING_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key).bind_tools(active_tools)
     fallback = ChatGroq(model=CODING_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key).bind_tools(active_tools)
     return primary.with_fallbacks([fallback])
+
+
+def get_validation_model():
+    """Get the LLM model without tools bound for capability validation."""
+    primary_key = os.getenv("GROQ_CORE_KEY")
+    api_key = primary_key or os.getenv("AGENT_API_KEY")
+    primary = ChatGroq(model=CODING_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
+    fallback = ChatGroq(model=CODING_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
+    return primary.with_fallbacks([fallback])
+
+
+VALIDATION_SYSTEM_PROMPT = """You are a task compatibility validator.
+Your sole job is to evaluate if a user's coding/development instruction falls strictly and exclusively within these allowed capabilities:
+1. Writing, modifying, or analyzing frontend code in the React framework (React, JSX, TSX, React components, state, hooks, React styling, etc.).
+2. Writing, modifying, or analyzing backend code in Python (FastAPI, Flask, Django, Python scripts, backend logic, data processing in Python, etc.).
+
+Strict Exclusion Rules:
+- Any frontend tasks using other frameworks (e.g., Vue, Angular, Svelte, Vanilla HTML/CSS/JS without React) are NOT allowed.
+- Any backend tasks using other languages/runtimes (e.g., Node.js, Express, Go, Java, C++, Rust, Ruby, PHP) are NOT allowed.
+- Neutral repository tasks (like listing files, reading project structures, searching codebase, auditing security) are allowed ONLY if they support a React or Python codebase. If the task is neutral but asks about React/Python, it is compatible. If the task explicitly asks to analyze/inspect/write non-React or non-Python code, it is NOT allowed.
+- General tasks not related to coding/development at all are NOT allowed.
+
+You must reply with a JSON object in this format:
+{
+  "is_compatible": true or false,
+  "explanation": "If not compatible, a polite message explaining that you are strictly capable of writing frontend in React and backend in Python. If compatible, an empty string."
+}
+Do not return any other text, only the JSON object.
+"""
+
+
+def is_task_compatible(task: str) -> tuple[bool, str]:
+    """
+    Validates if the coding task is strictly within the allowed capabilities:
+    - Frontend in React framework
+    - Backend in Python
+    Returns (is_compatible, explanation_if_not_compatible).
+    """
+    import json
+    import re
+    
+    logger.info(f"Validating capability for task: {task[:100]}...")
+    try:
+        model = get_validation_model()
+        response = model.invoke([
+            SystemMessage(content=VALIDATION_SYSTEM_PROMPT),
+            HumanMessage(content=f"Task: {task}")
+        ])
+        content = response.content.strip()
+        json_match = re.search(r"\{.*\}", content, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            is_compatible = data.get("is_compatible", True)
+            explanation = data.get("explanation", "")
+            if not is_compatible and not explanation:
+                explanation = "I apologize, but I am strictly restricted to writing frontend code using the React framework and backend code in Python. I cannot assist with tasks outside of these capabilities."
+            return is_compatible, explanation
+    except Exception as e:
+        logger.error(f"Error during task compatibility validation: {e}")
+        return True, ""
+    return True, ""
 
 
 def coding_worker_node(state: dict) -> dict:
@@ -368,6 +427,20 @@ def coding_worker_node(state: dict) -> dict:
     session_id = state.get("configurable", {}).get("thread_id", "default")
     current_task = state.get("current_task", "")
     scratchpad = state.get("scratchpad", "")
+    
+    # Sync approvals from scratchpad back to the in-memory APPROVAL_REGISTRY (e.g. after a restart)
+    import re
+    from src.graph.supervisor import approve_file
+    from src.tools.coding_tools import _get_absolute_path
+    
+    approved_files = re.findall(r"\[APPROVED:\s*(.*?)\]", scratchpad)
+    for filepath in approved_files:
+        try:
+            abs_path = os.path.realpath(_get_absolute_path(filepath.strip()))
+            approve_file(session_id, abs_path)
+        except Exception as e:
+            logger.warning(f"Failed to register approved file '{filepath}' from scratchpad: {e}")
+            
     messages = state.get("messages", [])
     
     target_instruction = current_task if current_task else ""
@@ -386,6 +459,20 @@ def coding_worker_node(state: dict) -> dict:
             "scratchpad": scratchpad + "\n- [Coding Worker]: No task provided.",
             "worker_complete": {"coding_worker": True},
             "worker_outputs": {"coding_worker": "No instruction provided."},
+            "worker_type": "coding_worker",
+            "next_agent": "supervisor"
+        }
+
+    # Task compatibility pre-check
+    is_compatible, incompatibility_explanation = is_task_compatible(target_instruction)
+    if not is_compatible:
+        rejection_msg = incompatibility_explanation or "I apologize, but I am strictly restricted to writing frontend code using the React framework and backend code in Python. I cannot assist with tasks outside of these capabilities."
+        print(f"[CODING WORKER] Task rejected: {rejection_msg}")
+        return {
+            "messages": [AIMessage(content=rejection_msg, name="coding_worker")],
+            "scratchpad": scratchpad + f"\n- [Coding Worker]: Rejected task - {rejection_msg}",
+            "worker_complete": {"coding_worker": True},
+            "worker_outputs": {"coding_worker": rejection_msg},
             "worker_type": "coding_worker",
             "next_agent": "supervisor"
         }
@@ -445,17 +532,9 @@ def coding_worker_node(state: dict) -> dict:
             if tool_name in ["create_files", "modify_files", "delete_file"]:
                 filepath = tool_args.get("filepath", "")
                 
-                # Check for path-normalized approvals in scratchpad
+                # Issue #4: Use isolated approval registry instead of scratchpad text scanning
+                from src.graph.supervisor import is_file_approved
                 from src.tools.coding_tools import _get_absolute_path
-                import re
-                
-                approved_paths = re.findall(r"\[APPROVED:\s*([^\]]+)\]", scratchpad)
-                approved_abs_paths = set()
-                for p in approved_paths:
-                    try:
-                        approved_abs_paths.add(os.path.realpath(_get_absolute_path(p.strip().strip("'\""))))
-                    except Exception:
-                        pass
                 
                 try:
                     current_abs_path = os.path.realpath(_get_absolute_path(filepath))
@@ -463,8 +542,7 @@ def coding_worker_node(state: dict) -> dict:
                     current_abs_path = None
                     
                 is_approved = (
-                    f"[APPROVED: {filepath}]" in scratchpad or 
-                    (current_abs_path is not None and current_abs_path in approved_abs_paths)
+                    current_abs_path is not None and is_file_approved(session_id, current_abs_path)
                 )
                 
                 if not is_approved:
@@ -502,6 +580,13 @@ def coding_worker_node(state: dict) -> dict:
                 agent_messages.append(tool_message)
             
         if tool_calls_count >= max_tool_calls:
+            break
+
+        # If we blocked for approval, also exit the outer while loop immediately.
+        # Continuing would give the LLM an AIMessage with an unresolved tool_call
+        # but no ToolMessage response, which is an invalid state that causes it to
+        # generate no tool calls and prematurely mark the worker as complete.
+        if blocked_for_approval:
             break
             
     completed = True

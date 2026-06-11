@@ -77,30 +77,74 @@ Analyze and output:
         
         if "RETRY_REQUIRED" in safe_response:
             if retry_count >= 2:
+                # On second retry, assign task to a different agent approach
                 # Remove the RETRY_REQUIRED token and append failure message
                 safe_response = safe_response.replace("RETRY_REQUIRED", "").strip()
                 safe_response += "\n[Max validation retry limit reached. Verification failed after multiple attempts. Proceeding without further retries.]"
                 updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Verification failed repeatedly. Aborting corrections to prevent infinite loop.\nFact-Check:\n{safe_response}"
+                
+                # For second retry, suggest trying a completely different approach
+                # by modifying the plan to consult different types of sources
+                current_plan = state.get("plan", [])
+                # Add a step that suggests consulting web sources if we were using docs, or vice versa
+                if any("web" in str(item).lower() or "scrape" in str(item).lower() for item in current_plan):
+                    # If we were trying web approaches, suggest document approach
+                    state_update_plan = current_plan + ["CONSULT DOCUMENTS: Review relevant documentation for verified information before proceeding."]
+                elif any("rag" in str(item).lower() or "document" in str(item).lower() for item in current_plan):
+                    # If we were trying document approaches, suggest web approach  
+                    state_update_plan = current_plan + ["VERIFY ONLINE: Check current information from reliable web sources to confirm findings."]
+                else:
+                    # Generic different approach
+                    state_update_plan = current_plan + ["ALTERNATIVE APPROACH: Use a different methodology or source type to verify the findings."]
+                    
+                state_update = {
+                    "messages": [AIMessage(content=safe_response, name="critic_worker")],
+                    "scratchpad": updated_scratchpad,
+                    "worker_complete": {"critic_worker": True},
+                    "worker_outputs": {"critic_worker": safe_response},
+                    "worker_type": "critic_worker",
+                    "next_agent": "supervisor",
+                    "critic_retry_count": retry_count,  # Don't increment on final retry
+                    "plan": state_update_plan
+                }
             else:
+                # On first retry, give hints/easier settings to the same worker
+                # Extract key findings to provide specific guidance
+                feedback_lines = safe_response.split('\n')
+                specific_feedback = []
+                for line in feedback_lines:
+                    if any(keyword in line.lower() for keyword in ['contradiction', 'gap', 'error', 'mistake', 'inconsistency', 'should', 'need to']):
+                        specific_feedback.append(line.strip())
+                
+                hints = " ".join(specific_feedback[:2]) if specific_feedback else "Review findings carefully and verify accuracy"
+                
                 updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Fact-Check Analysis:\n{safe_response}"
+                
+                # For first retry, enhance current_task with specific hints for the worker
+                enhanced_task = f"{current_task} [HINT: {hints}]" if hints else current_task
+                
+                state_update = {
+                    "messages": [AIMessage(content=safe_response, name="critic_worker")],
+                    "scratchpad": updated_scratchpad,
+                    "worker_complete": {"critic_worker": True},
+                    "worker_outputs": {"critic_worker": safe_response},
+                    "worker_type": "critic_worker",
+                    "next_agent": "supervisor",
+                    "critic_retry_count": retry_count + 1,
+                    "current_task": enhanced_task
+                }
         else:
             updated_scratchpad = scratchpad + f"\n- [Critic Worker]: Fact-Check Analysis:\n{safe_response}"
-        
-        state_update = {
-            "messages": [AIMessage(content=safe_response, name="critic_worker")],
-            "scratchpad": updated_scratchpad,
-            "worker_complete": {"critic_worker": True},
-            "worker_outputs": {"critic_worker": safe_response},
-            "worker_type": "critic_worker",
-            "next_agent": "supervisor",
-            "critic_retry_count": retry_count
-        }
-        
-        if "RETRY_REQUIRED" in safe_response and retry_count < 2:
-            print(f"[CRITIC WORKER] Hallucination detected! Forcing supervisor retry (retry {retry_count + 1}/2).")
-            current_plan = state.get("plan", [])
-            state_update["plan"] = current_plan + ["FIX ERROR: Review critic feedback and dispatch a worker to find the correct information."]
-            state_update["critic_retry_count"] = retry_count + 1
+            
+            state_update = {
+                "messages": [AIMessage(content=safe_response, name="critic_worker")],
+                "scratchpad": updated_scratchpad,
+                "worker_complete": {"critic_worker": True},
+                "worker_outputs": {"critic_worker": safe_response},
+                "worker_type": "critic_worker",
+                "next_agent": "supervisor",
+                "critic_retry_count": retry_count
+            }
             
         return state_update
     except Exception as e:

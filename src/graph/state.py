@@ -20,6 +20,20 @@ def merge_dict(existing: dict, new: dict) -> dict:
     return {**existing, **new}
 
 
+def merge_list(existing: list, new: list) -> list:
+    if new is None:
+        return existing or []
+    if not new:
+        return existing or []
+    if not existing:
+        return list(new)
+    combined = list(existing)
+    for item in new:
+        if item not in combined:
+            combined.append(item)
+    return combined
+
+
 def merge_next_agent(existing: str, new: str) -> str:
     if new is None:
         return existing or ""
@@ -71,8 +85,15 @@ class ContextEngineState(TypedDict):
     current_task: str
     worker_complete: Annotated[Dict[str, bool], merge_dict]
     worker_outputs: Annotated[Dict[str, str], merge_dict]
-    critic_retry_count: int
+    worker_output_ids: Annotated[Dict[str, str], merge_dict]
+    worker_output_summaries: Annotated[Dict[str, str], merge_dict]
+    active_document_ids: Annotated[List[str], merge_list]
+    task_hashes: Annotated[List[str], merge_list]
+    file_status_flags: Annotated[Dict[str, str], merge_dict]
+    retry_counter: int
     pending_file_approvals: Dict[str, Dict]
     waiting_for_approval: bool
     approval_filepath: str
-    approval_tool: str  
+    approval_tool: str
+    critic_retry_count: int
+

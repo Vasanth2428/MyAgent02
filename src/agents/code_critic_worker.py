@@ -153,7 +153,25 @@ def code_critic_worker_node(state: dict) -> dict:
     if is_invalid and retry_count < 2:
         logger.info(f"[CODE CRITIC WORKER] Critical issue detected! Forcing supervisor retry (retry {retry_count + 1}/2).")
         current_plan = state.get("plan", [])
-        state_update["plan"] = current_plan + ["FIX ERROR: Review code critic feedback and modify files to correct the issues."]
+
+        # Issue #2: Include specific critic findings in the retry task so the
+        # coding worker gets concrete corrective instructions, not a vague "FIX ERROR".
+        critic_feedback_summary = report.criticism_summary if report else "Unknown issues detected."
+        finding_details = []
+        if report and report.findings:
+            for f in report.findings:
+                if f.severity.lower() == "critical":
+                    detail = f"[{f.issue_type}] {f.details}"
+                    if f.file_location:
+                        detail += f" (in {f.file_location})"
+                    finding_details.append(detail)
+        findings_text = "; ".join(finding_details) if finding_details else critic_feedback_summary
+
+        state_update["plan"] = current_plan + [f"FIX: {findings_text[:500]}"]
+        state_update["current_task"] = f"CRITIC RETRY ({retry_count + 1}/2): Address these specific issues found by the code critic: {findings_text[:800]}"
         state_update["critic_retry_count"] = retry_count + 1
+    elif is_invalid and retry_count >= 2:
+        # Issue #2: Reset retry count to prevent stale state from blocking future critic cycles
+        state_update["critic_retry_count"] = 0
         
     return state_update

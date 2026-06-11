@@ -77,29 +77,31 @@ class TestCodingWorker(unittest.TestCase):
             "args": {"filepath": "temp_delete.py"},
             "id": "call_999"
         }
-        
+    
         mock_response = MagicMock()
         mock_response.tool_calls = [mock_tool_call]
         mock_response.content = "Deleting file."
-        
+    
         mock_response_stop = MagicMock()
         mock_response_stop.tool_calls = []
         mock_response_stop.content = "Finished deleting."
-        
+    
         mock_llm = MagicMock()
         mock_llm.invoke.side_effect = [mock_response, mock_response_stop]
         mock_get_model.return_value = mock_llm
-        
+    
         state = {
             "current_task": "Delete the temp file",
             "scratchpad": "[APPROVED: temp_delete.py]",
             "messages": []
         }
-        
+    
         mock_delete = MagicMock()
         mock_delete.invoke = MagicMock(return_value="Success: Deleted file 'temp_delete.py'")
         with patch.dict(tools_map, {"delete_file": mock_delete}):
-            res = coding_worker_node(state)
+            with patch("src.graph.supervisor.is_file_approved") as mock_approved:
+                mock_approved.return_value = True
+                res = coding_worker_node(state)
             self.assertEqual(res["worker_complete"]["coding_worker"], True)
             mock_delete.invoke.assert_called_once_with({"filepath": "temp_delete.py"})
 
@@ -146,31 +148,126 @@ class TestCodingWorker(unittest.TestCase):
             "args": {"filepath": "banking_form.html", "content": "test"},
             "id": "call_1234"
         }
-        
+    
         mock_response = MagicMock()
         mock_response.tool_calls = [mock_tool_call]
         mock_response.content = "Creating banking form."
-        
+    
         mock_response_stop = MagicMock()
         mock_response_stop.tool_calls = []
         mock_response_stop.content = "Finished creating."
-        
+    
         mock_llm = MagicMock()
         mock_llm.invoke.side_effect = [mock_response, mock_response_stop]
         mock_get_model.return_value = mock_llm
-        
+    
         state = {
             "current_task": "Create banking_form.html",
             "scratchpad": "[APPROVED: ./workspace/banking_form.html]",
             "messages": []
         }
-        
+    
         mock_create = MagicMock()
         mock_create.invoke = MagicMock(return_value="Success: Created file 'banking_form.html'")
         with patch.dict(tools_map, {"create_files": mock_create}):
-            res = coding_worker_node(state)
+            with patch("src.graph.supervisor.is_file_approved") as mock_approved:
+                mock_approved.return_value = True
+                res = coding_worker_node(state)
             self.assertEqual(res["worker_complete"]["coding_worker"], True)
             mock_create.invoke.assert_called_once_with({"filepath": "banking_form.html", "content": "test"})
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_node_scratchpad_sync_approval(self, mock_get_model):
+        """Coding worker should sync approvals from scratchpad back to APPROVAL_REGISTRY on start."""
+        mock_response = MagicMock()
+        mock_response.tool_calls = []
+        mock_response.content = "Finished coding task successfully."
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = mock_response
+        mock_get_model.return_value = mock_llm
+
+        state = {
+            "configurable": {"thread_id": "test_session_123"},
+            "current_task": "Write hello world script",
+            "scratchpad": "[APPROVED: new_created_file.txt]",
+            "messages": []
+        }
+        
+        from src.graph.supervisor import is_file_approved, APPROVAL_REGISTRY
+        from src.tools.coding_tools import _get_absolute_path
+        import os
+        
+        # Clear approvals for this session
+        APPROVAL_REGISTRY.pop("test_session_123", None)
+        
+        # Call coding worker node
+        res = coding_worker_node(state)
+        
+        # Verify approval is now in registry
+        abs_path = os.path.realpath(_get_absolute_path("new_created_file.txt"))
+        self.assertTrue(is_file_approved("test_session_123", abs_path))
+
+    @patch("src.agents.coding_worker.get_validation_model")
+    def test_coding_worker_node_compatible_react(self, mock_get_val_model):
+        """Coding worker should accept React frontend tasks."""
+        mock_response = MagicMock()
+        mock_response.content = '{"is_compatible": true, "explanation": ""}'
+        mock_val_llm = MagicMock()
+        mock_val_llm.invoke.return_value = mock_response
+        mock_get_val_model.return_value = mock_val_llm
+
+        with patch("src.agents.coding_worker.get_coding_model") as mock_get_model:
+            mock_coding_response = MagicMock()
+            mock_coding_response.tool_calls = []
+            mock_coding_response.content = "React task done."
+            mock_coding_llm = MagicMock()
+            mock_coding_llm.invoke.return_value = mock_coding_response
+            mock_get_model.return_value = mock_coding_llm
+
+            state = {
+                "current_task": "Create a React login form component",
+                "scratchpad": "",
+                "messages": []
+            }
+            res = coding_worker_node(state)
+            self.assertEqual(res["worker_complete"]["coding_worker"], True)
+            self.assertIn("React task done", res["worker_outputs"]["coding_worker"])
+
+    @patch("src.agents.coding_worker.get_validation_model")
+    def test_coding_worker_node_incompatible_vue(self, mock_get_val_model):
+        """Coding worker should gracefully reject Vue frontend tasks."""
+        mock_response = MagicMock()
+        mock_response.content = '{"is_compatible": false, "explanation": "I apologize, but I am strictly restricted to writing frontend code using the React framework and backend code in Python."}'
+        mock_val_llm = MagicMock()
+        mock_val_llm.invoke.return_value = mock_response
+        mock_get_val_model.return_value = mock_val_llm
+
+        state = {
+            "current_task": "Create a Vue login component",
+            "scratchpad": "",
+            "messages": []
+        }
+        res = coding_worker_node(state)
+        self.assertEqual(res["worker_complete"]["coding_worker"], True)
+        self.assertIn("strictly restricted to writing frontend code using the React framework", res["worker_outputs"]["coding_worker"])
+
+    @patch("src.agents.coding_worker.get_validation_model")
+    def test_coding_worker_node_incompatible_nodejs(self, mock_get_val_model):
+        """Coding worker should gracefully reject Node.js backend tasks."""
+        mock_response = MagicMock()
+        mock_response.content = '{"is_compatible": false, "explanation": "I apologize, but I am strictly restricted to writing frontend code using the React framework and backend code in Python."}'
+        mock_val_llm = MagicMock()
+        mock_val_llm.invoke.return_value = mock_response
+        mock_get_val_model.return_value = mock_val_llm
+
+        state = {
+            "current_task": "Build a Node.js express API endpoint",
+            "scratchpad": "",
+            "messages": []
+        }
+        res = coding_worker_node(state)
+        self.assertEqual(res["worker_complete"]["coding_worker"], True)
+        self.assertIn("strictly restricted to writing frontend code using the React framework", res["worker_outputs"]["coding_worker"])
 
 
 if __name__ == "__main__":

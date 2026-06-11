@@ -12,6 +12,11 @@ class TestWeaviateRetriever(unittest.TestCase):
     def setUpClass(cls):
         load_dotenv()
         cls.retriever = WeaviateRetriever()
+        cls.retriever.add_documents(
+            ["This is a test document about operating system processes and scheduling.", 
+             "Another document about file systems in modern operating systems."], 
+            source="test_search_setup"
+        )
 
     @classmethod
     def tearDownClass(cls):

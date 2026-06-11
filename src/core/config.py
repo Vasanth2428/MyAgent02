@@ -50,6 +50,9 @@ CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
 MEMORY_DECAY_RATE = float(os.getenv("RAG_MEMORY_DECAY_RATE", "0.1"))
 MEMORY_WEIGHT_THRESHOLD = float(os.getenv("RAG_MEMORY_WEIGHT_THRESHOLD", "0.1"))
 
+# --- Turn-Based Memory Decay (Issue #10) ---
+MEMORY_TURN_DECAY_RATE = float(os.getenv("RAG_MEMORY_TURN_DECAY_RATE", "0.15"))
+
 # --- Semantic Deduplication ---
 SEMANTIC_DEDUP_THRESHOLD = float(os.getenv("RAG_SEMANTIC_DEDUP_THRESHOLD", "0.85"))
 SEMANTIC_DEDUP_MIN_WORDS = int(os.getenv("RAG_SEMANTIC_DEDUP_MIN_WORDS", "4"))
@@ -61,6 +64,9 @@ HISTORY_LIMIT = int(os.getenv("RAG_HISTORY_LIMIT", "10"))
 # --- HyDE ---
 HYDE_MAX_TOKENS = int(os.getenv("RAG_HYDE_MAX_TOKENS", "150"))
 HYDE_TEMPERATURE = float(os.getenv("RAG_HYDE_TEMPERATURE", "0.3"))
+
+# --- Retrieval Concurrency (Issue #7: Concurrency Pool Starvation) ---
+MAX_CONCURRENT_RETRIEVALS = int(os.getenv("RAG_MAX_CONCURRENT_RETRIEVALS", "3"))
 
 # --- Query Expansion ---
 EXPANSION_MIN_WORDS = int(os.getenv("RAG_EXPANSION_MIN_WORDS", "5"))

@@ -92,15 +92,14 @@ class TestMemory(unittest.TestCase):
         self.assertAlmostEqual(_cosine_similarity(a, b), 0.0, places=5)
 
     def test_decay_effect(self):
-        mem = ConversationMemory(decay_rate=100.0) # Instant decay
+        mem = ConversationMemory(decay_rate=1.0) # Clear decay rate
         with patch('src.core.services.grounding_service._get_shared_embedding_model') as mock_model:
             mock_encoder = MagicMock()
             mock_encoder.encode.return_value = np.array([0.1, 0.2, 0.3])
             mock_model.return_value = mock_encoder
             mem.add("Old memory.", role="user")
-        # Artificially set timestamp to 1 hour ago
-        from datetime import datetime, timedelta
-        mem.entries[0].last_seen = datetime.now() - timedelta(hours=1)
+        # Artificially set turn counter ahead to simulate multiple elapsed turns
+        mem._turn_counter = 20
         active = mem.get_active_context()
         self.assertEqual(active, "")
 
@@ -374,28 +373,28 @@ class TestSecuritySanitization(unittest.TestCase):
     def test_ssrf_blocks_localhost(self):
         """SSRF protection blocks localhost URLs."""
         from src.core.scraper import _validate_url_for_ssrf
-        is_valid, error = _validate_url_for_ssrf("http://localhost/test")
+        is_valid, error, _ = _validate_url_for_ssrf("http://localhost/test")
         self.assertFalse(is_valid)
         self.assertIn("localhost", error.lower())
 
     def test_ssrf_blocks_private_ip(self):
         """SSRF protection blocks private IP addresses."""
         from src.core.scraper import _validate_url_for_ssrf
-        is_valid, error = _validate_url_for_ssrf("http://192.168.1.1/test")
+        is_valid, error, _ = _validate_url_for_ssrf("http://192.168.1.1/test")
         self.assertFalse(is_valid)
         self.assertIn("private", error.lower())
 
     def test_ssrf_blocks_127_0_0_1(self):
         """SSRF protection blocks 127.0.0.1."""
         from src.core.scraper import _validate_url_for_ssrf
-        is_valid, error = _validate_url_for_ssrf("http://127.0.0.1/test")
+        is_valid, error, _ = _validate_url_for_ssrf("http://127.0.0.1/test")
         self.assertFalse(is_valid)
         self.assertIn("internal hostname", error.lower())
 
     def test_ssrf_allows_valid_url(self):
         """SSRF protection allows valid public URLs."""
         from src.core.scraper import _validate_url_for_ssrf
-        is_valid, error = _validate_url_for_ssrf("https://example.com/test")
+        is_valid, error, _ = _validate_url_for_ssrf("https://example.com/test")
         self.assertTrue(is_valid)
         self.assertEqual(error, "")
 

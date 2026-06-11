@@ -22,7 +22,8 @@ from functools import lru_cache
 
 from src.core.config import (
     TOKENIZER_ENCODING, MEMORY_DECAY_RATE, MEMORY_TOKEN_BUDGET,
-    MEMORY_WEIGHT_THRESHOLD, SEMANTIC_DEDUP_THRESHOLD, SEMANTIC_DEDUP_MIN_WORDS
+    MEMORY_WEIGHT_THRESHOLD, SEMANTIC_DEDUP_THRESHOLD, SEMANTIC_DEDUP_MIN_WORDS,
+    MEMORY_TURN_DECAY_RATE
 )
 
 # Re-export for backward compatibility with tests
@@ -61,11 +62,12 @@ class MemoryEntry:
     - A mathematical fingerprint for finding similar messages (embedding)
     """
 
-    def __init__(self, text: str, importance: float = 1.0, role: str = "user"):
+    def __init__(self, text: str, importance: float = 1.0, role: str = "user", turn_count: int = 0):
         self.text = text
         self.base_importance = importance
         self.role = role
         self.last_seen = datetime.now()
+        self.turn_count = turn_count  # Issue #10: Track interaction turn number
         self._embedding: Optional[np.ndarray] = None
 
     @property
@@ -74,16 +76,17 @@ class MemoryEntry:
             self._embedding = _encode_text(self.text)
         return self._embedding
 
-    def current_weight(self, decay_rate: float = MEMORY_DECAY_RATE) -> float:
+    def current_weight(self, decay_rate: float = MEMORY_TURN_DECAY_RATE, current_turn: int = 0) -> float:
         """
         How relevant this memory is right now.
         
-        Memories fade over time. This calculates how important this entry still is
-        based on how long ago it was mentioned. The formula uses exponential decay:
-        if something was important but mentioned hours ago, it becomes less important.
+        Issue #10: Uses interaction-turn based decay instead of wall-clock time.
+        Memories decay based on how many conversation turns have passed since
+        they were last seen, not how many hours. This means a user can take a
+        24-hour break without losing important context.
         """
-        hours = (datetime.now() - self.last_seen).total_seconds() / 3600
-        return self.base_importance * np.exp(-decay_rate * hours)
+        turns_elapsed = max(0, current_turn - self.turn_count)
+        return self.base_importance * np.exp(-decay_rate * turns_elapsed)
 
     def touch(self):
         """Resets the access timer to the current time."""
@@ -103,16 +106,19 @@ class ConversationMemory:
         max_tokens: Maximum space allocated for memory in the AI's context
     """
 
-    def __init__(self, decay_rate: float = MEMORY_DECAY_RATE, max_tokens: int = MEMORY_TOKEN_BUDGET):
+    def __init__(self, decay_rate: float = MEMORY_TURN_DECAY_RATE, max_tokens: int = MEMORY_TOKEN_BUDGET):
         self.entries: List[MemoryEntry] = []
         self.decay_rate = decay_rate
         self.max_tokens = max_tokens
+        self._turn_counter: int = 0  # Issue #10: Global interaction turn counter
 
     def add(self, text: str, importance: float = 1.0, role: str = "user"):
         """
         Adds a turn to memory. If semantically similar text exists, resets its timer.
         Uses embedding-based cosine similarity for semantic deduplication.
         """
+        # Issue #10: Increment turn counter on each add
+        self._turn_counter += 1
         word_count = len(text.split())
 
         # For longer texts, use semantic similarity
@@ -125,6 +131,7 @@ class ConversationMemory:
                     if similarity > SEMANTIC_DEDUP_THRESHOLD:
                         logger.debug(f"Semantic deduplicating {role} entry (Similarity: {similarity:.2f}).")
                         existing.touch()
+                        existing.turn_count = self._turn_counter  # Refresh turn stamp
                         existing.base_importance = max(existing.base_importance, importance)
                         return
             except Exception as e:
@@ -136,11 +143,12 @@ class ConversationMemory:
             if overlap > 0.7:
                 logger.debug(f"Lexical deduplicating {role} entry (Overlap: {overlap:.2f}).")
                 existing.touch()
+                existing.turn_count = self._turn_counter  # Refresh turn stamp
                 existing.base_importance = max(existing.base_importance, importance)
                 return
 
         logger.debug(f"Adding new {role} entry. Total active: {len(self.entries) + 1}")
-        self.entries.append(MemoryEntry(text, importance, role))
+        self.entries.append(MemoryEntry(text, importance, role, turn_count=self._turn_counter))
 
     @staticmethod
     def _text_overlap(a: str, b: str) -> float:
@@ -161,10 +169,10 @@ class ConversationMemory:
 
         active = [
             (idx, e) for idx, e in indexed_entries 
-            if e.current_weight(self.decay_rate) > MEMORY_WEIGHT_THRESHOLD
+            if e.current_weight(self.decay_rate, self._turn_counter) > MEMORY_WEIGHT_THRESHOLD
         ]
 
-        active.sort(key=lambda x: x[1].current_weight(self.decay_rate), reverse=True)
+        active.sort(key=lambda x: x[1].current_weight(self.decay_rate, self._turn_counter), reverse=True)
 
         selected_indexed = []
         total_tokens = 0

@@ -419,6 +419,14 @@ async def approve_changes(request: ApprovalRequest):
     if request.approve:
         approval_token = f"[APPROVED: {pending['filepath']}]"
         
+        from src.tools.coding_tools import _get_absolute_path
+        from src.graph.supervisor import approve_file
+        try:
+            abs_path = os.path.realpath(_get_absolute_path(pending['filepath']))
+            approve_file(session_id, abs_path)
+        except Exception as e:
+            logger.warning(f"Failed to register approval for {pending['filepath']}: {e}")
+            
         async def resume_workflow():
             try:
                 if hasattr(rag.multi_agent_checkpointer, "aget_tuple"):
@@ -454,18 +462,11 @@ async def approve_changes(request: ApprovalRequest):
                     }
                     
                     if hasattr(rag.multi_agent_graph, "aupdate_state"):
-                        result = await rag.multi_agent_graph.aupdate_state(config, update_state)
+                        await rag.multi_agent_graph.aupdate_state(config, update_state)
                     else:
-                        result = rag.multi_agent_graph.update_state(config, update_state)
+                        rag.multi_agent_graph.update_state(config, update_state)
                     
-                    try:
-                        if hasattr(rag.multi_agent_graph, "ainvoke"):
-                            final_result = await rag.multi_agent_graph.ainvoke(None, config=config)
-                        else:
-                            final_result = rag.multi_agent_graph.invoke(None, config=config)
-                        return {"status": "approved", "message": "Workflow resumed successfully", "result": final_result.get("final_answer", "Workflow completed")}
-                    except Exception as invoke_error:
-                        return {"status": "approved", "message": "Approval recorded, workflow may be complete"}
+                    return {"status": "approved", "message": "State updated, resuming workflow..."}
                 
                 result = execute_pending_approval(session_id)
                 return {"status": "approved", "result": result, "message": "Tool executed directly (fallback)"}
@@ -497,8 +498,66 @@ async def approve_changes(request: ApprovalRequest):
         return {"status": "rejected"}
 
 
+
 if __name__ == "__main__":
     import uvicorn
     logger.info("Launching Uvicorn server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
+
+@app.get("/resume_stream/{session_id}")
+async def resume_stream(session_id: str):
+    """
+    Resume a paused workflow (e.g., after file approval) and stream the continued
+    execution as Server-Sent Events.  The frontend calls this after POSTing to
+    /approve_changes so the user can see the resumed agent output live.
+    """
+    if not rag:
+        raise HTTPException(status_code=500, detail="Engine not ready")
+
+    from src.graph.workflow import get_graph_config
+
+    async def event_generator():
+        import json
+        config = get_graph_config(session_id)
+        try:
+            logger.info(f"Resuming workflow stream for session {session_id}")
+            if hasattr(rag.multi_agent_graph, "astream"):
+                async for event in rag.multi_agent_graph.astream(None, config=config):
+                    for node_name, state_delta in event.items():
+                        yield f"data: {json.dumps({'event': 'node_start', 'node': node_name})}\n\n"
+
+                        # Emit thought / observation so the UI accordion shows progress
+                        worker_type = state_delta.get("worker_type", "") or node_name.replace("_node", "")
+                        response = ""
+                        if "worker_outputs" in state_delta and worker_type:
+                            response = state_delta["worker_outputs"].get(worker_type, "")
+                        if not response and "messages" in state_delta and state_delta["messages"]:
+                            response = state_delta["messages"][-1].content
+
+                        if response:
+                            yield f"data: {json.dumps({'event': 'thought', 'text': f'{worker_type}: {response[:120]}'})}\n\n"
+                            yield f"data: {json.dumps({'event': 'observation', 'output': response})}\n\n"
+
+                        # If a nested approval is needed again, signal it
+                        if state_delta.get("waiting_for_approval"):
+                            approval_filepath = state_delta.get("approval_filepath", "")
+                            approval_tool = state_delta.get("approval_tool", "")
+                            yield f"data: {json.dumps({'event': 'blocked_tool', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
+                            yield f"data: {json.dumps({'event': 'waiting_for_approval', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
+                            return  # Stop streaming; wait for next approval
+
+                        # Emit final answer if available
+                        if "final_answer" in state_delta and state_delta["final_answer"]:
+                            answer = state_delta["final_answer"]
+                            for chunk in answer.split(" "):
+                                yield f"data: {json.dumps({'event': 'answer_chunk', 'text': chunk + ' '})}\n\n"
+
+            yield f"data: {json.dumps({'event': 'done', 'stats': {}})}\n\n"
+        except asyncio.CancelledError:
+            logger.warning(f"Client disconnected from resume stream for session {session_id}.")
+        except Exception as e:
+            logger.error(f"Resume stream error: {e}")
+            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

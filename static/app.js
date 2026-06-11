@@ -760,6 +760,7 @@ form.addEventListener('submit', async (e) => {
                     ensureAccordion();
                     
                     const approvalDiv = document.createElement("div");
+                    approvalDiv.id = "approval-panel-" + Date.now();
                     approvalDiv.className = "step-approval-log";
                     approvalDiv.style.cssText = "margin-top: 10px; padding: 12px; background: rgba(251, 191, 36, 0.1); border: 1px solid orange; border-radius: 6px;";
                     
@@ -771,20 +772,53 @@ form.addEventListener('submit', async (e) => {
                     btnContainer.style.cssText = "display: flex; gap: 8px; margin-top: 8px;";
                     
                     const approveBtn = document.createElement("button");
-                    approveBtn.textContent = "Approve";
-                    approveBtn.style.cssText = "padding: 6px 12px; background: green; border: none; border-radius: 4px; color: #000; font-weight: bold; cursor: pointer;";
-                    approveBtn.onclick = function() { sendApproval(true, data.filepath, data.tool); };
+                    approveBtn.textContent = "✔ Approve";
+                    approveBtn.style.cssText = "padding: 6px 14px; background: #16a34a; border: none; border-radius: 4px; color: #fff; font-weight: bold; cursor: pointer; pointer-events: auto; z-index: 100;";
                     
                     const rejectBtn = document.createElement("button");
-                    rejectBtn.textContent = "Reject";
-                    rejectBtn.style.cssText = "padding: 6px 12px; background: red; border: none; border-radius: 4px; color: #fff; font-weight: bold; cursor: pointer;";
-                    rejectBtn.onclick = function() { sendApproval(false, data.filepath, data.tool); };
+                    rejectBtn.textContent = "✖ Reject";
+                    rejectBtn.style.cssText = "padding: 6px 14px; background: #dc2626; border: none; border-radius: 4px; color: #fff; font-weight: bold; cursor: pointer; pointer-events: auto; z-index: 100;";
+
+                    // Capture current accordion refs before the async resume stream replaces them
+                    const capturedAccordion = inlineThinkingAccordion;
+                    const capturedDetails = inlineThinkingDetails;
+                    const capturedBodyContainer = bodyContainer;
+                    const capturedAiBubble = aiBubble;
+                    const capturedMode = mode;
+
+                    const disableBtns = () => {
+                        approveBtn.disabled = true;
+                        rejectBtn.disabled = true;
+                        approveBtn.style.opacity = '0.5';
+                        rejectBtn.style.opacity = '0.5';
+                    };
+
+                    approveBtn.onclick = function() {
+                        disableBtns();
+                        sendApproval(true, data.filepath, data.tool, capturedAccordion, capturedDetails, capturedBodyContainer, capturedAiBubble, capturedMode);
+                    };
+                    rejectBtn.onclick = function() {
+                        disableBtns();
+                        sendApproval(false, data.filepath, data.tool, capturedAccordion, capturedDetails, capturedBodyContainer, capturedAiBubble, capturedMode);
+                    };
                     
                     btnContainer.appendChild(approveBtn);
                     btnContainer.appendChild(rejectBtn);
                     approvalDiv.appendChild(btnContainer);
                     inlineThinkingDetails.appendChild(approvalDiv);
                     inlineThinkingDetails.scrollTop = inlineThinkingDetails.scrollHeight;
+                }
+                else if (data.event === "waiting_for_approval") {
+                    // Stream has ended but we are waiting — keep UI in generating state
+                    // (do NOT call setGenerating(false) — the finally block below will
+                    // normally do it, so we must prevent that by marking a flag)
+                    addLog("Pipeline paused — awaiting user approval for: " + data.filepath, "WARNING");
+                    // Mark on bodyContainer so the finally block knows not to disable
+                    bodyContainer.dataset.waitingForApproval = "true";
+                    bodyContainer.classList.remove('typing-cursor');
+                    if (!accumulatedText) {
+                        bodyContainer.innerHTML = `<span style="color: orange; font-style: italic;">⏳ Workflow paused — approve or reject the file operation above to continue.</span>`;
+                    }
                 }
                 else if (data.event === "state_change") {
                     addLog(`State: ${data.state}`, "SYSTEM");
@@ -979,7 +1013,11 @@ form.addEventListener('submit', async (e) => {
             bodyContainer.classList.remove('typing-cursor');
         }
     } finally {
-        AppState.setGenerating(false);
+        // If the workflow is paused waiting for user approval, do NOT reset the
+        // generating state — the buttons need to remain interactive.
+        if (!bodyContainer.dataset.waitingForApproval) {
+            AppState.setGenerating(false);
+        }
     }
 });
 
@@ -1085,7 +1123,11 @@ window.closeTelemetryModal = function() {
 };
 
 // ---- Send Approval Function ----
-async function sendApproval(approved, filepath, tool) {
+// Accepts captured UI refs so it can inject resumed-workflow SSE events
+// directly into the existing AI bubble / accordion without spawning a new message.
+async function sendApproval(approved, filepath, tool,
+                            capturedAccordion, capturedDetails,
+                            capturedBodyContainer, capturedAiBubble, capturedMode) {
     try {
         const res = await fetch(API_BASE + '/approve_changes', {
             method: 'POST',
@@ -1096,13 +1138,138 @@ async function sendApproval(approved, filepath, tool) {
             })
         });
         const data = await res.json();
-        if (approved) {
-            addLog('Changes approved and applied', 'SUCCESS');
-        } else {
+        if (!approved) {
             addLog('Changes rejected', 'WARNING');
+            if (capturedBodyContainer) {
+                capturedBodyContainer.dataset.waitingForApproval = '';
+                capturedBodyContainer.innerHTML = `<span style="color: var(--accent-amber); font-style: italic;">❌ File operation rejected. Workflow stopped.</span>`;
+            }
+            AppState.setGenerating(false);
+            return;
+        }
+
+        addLog('Changes approved — resuming workflow...', 'SUCCESS');
+
+        // ---- Open a resume SSE stream and feed events into the existing bubble ----
+        try {
+            const resumeRes = await fetch(`${API_BASE}/resume_stream/${AppState.sid}`, {
+                method: 'GET',
+                signal: AppState.abortController ? AppState.abortController.signal : undefined
+            });
+            if (!resumeRes.ok) throw new Error('Resume stream failed: ' + resumeRes.status);
+
+            const reader = resumeRes.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+
+            // Re-show the accordion spinner
+            if (capturedAccordion) {
+                const spinner = capturedAccordion.querySelector('.thinking-spinner');
+                const statusSpan = capturedAccordion.querySelector('.thinking-status');
+                if (spinner) { spinner.className = 'thinking-spinner'; spinner.textContent = ''; spinner.style.color = ''; }
+                if (statusSpan) statusSpan.textContent = 'Resuming workflow...';
+                capturedAccordion.setAttribute('open', '');
+            }
+            if (capturedBodyContainer) {
+                capturedBodyContainer.dataset.waitingForApproval = '';
+                capturedBodyContainer.innerHTML = '';
+            }
+
+            let resumeAccumulated = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    const clean = line.trim();
+                    if (!clean.startsWith('data:')) continue;
+                    let evt;
+                    try { evt = JSON.parse(clean.substring(5).trim()); } catch { continue; }
+
+                    if (evt.event === 'node_start') {
+                        addLog('Resumed node: ' + evt.node, 'STATE');
+                    } else if (evt.event === 'thought') {
+                        if (capturedDetails) {
+                            const l = document.createElement('div');
+                            l.className = 'step-thought-log';
+                            l.innerHTML = `🧠 ${escapeHtml(evt.text)}`;
+                            capturedDetails.appendChild(l);
+                            capturedDetails.scrollTop = capturedDetails.scrollHeight;
+                        }
+                    } else if (evt.event === 'observation') {
+                        if (capturedDetails) {
+                            const l = document.createElement('div');
+                            l.className = 'step-obs-log';
+                            l.innerHTML = `🔍 ${escapeHtml((evt.output || '').substring(0, 150))}`;
+                            capturedDetails.appendChild(l);
+                            capturedDetails.scrollTop = capturedDetails.scrollHeight;
+                        }
+                    } else if (evt.event === 'answer_chunk') {
+                        resumeAccumulated += evt.text;
+                        if (capturedBodyContainer) {
+                            capturedBodyContainer.textContent = resumeAccumulated;
+                            chatWindow.scrollTop = chatWindow.scrollHeight;
+                        }
+                    } else if (evt.event === 'blocked_tool') {
+                        // Another approval needed — show buttons again inside captured details
+                        if (capturedDetails) {
+                            addLog('Another file operation needs approval: ' + evt.filepath, 'WARNING');
+                            const aDiv = document.createElement('div');
+                            aDiv.style.cssText = 'margin-top:10px;padding:12px;background:rgba(251,191,36,0.1);border:1px solid orange;border-radius:6px;';
+                            aDiv.innerHTML = `<span style="color:orange;font-weight:bold;">⚠️ ${escapeHtml(evt.tool)} on '${escapeHtml(evt.filepath)}'</span>`;
+                            const bc = document.createElement('div');
+                            bc.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
+                            const ab = document.createElement('button');
+                            ab.textContent = '✔ Approve';
+                            ab.style.cssText = 'padding:6px 14px;background:#16a34a;border:none;border-radius:4px;color:#fff;font-weight:bold;cursor:pointer;';
+                            const rb = document.createElement('button');
+                            rb.textContent = '✖ Reject';
+                            rb.style.cssText = 'padding:6px 14px;background:#dc2626;border:none;border-radius:4px;color:#fff;font-weight:bold;cursor:pointer;';
+                            const dis = () => { ab.disabled = true; rb.disabled = true; ab.style.opacity='0.5'; rb.style.opacity='0.5'; };
+                            ab.onclick = () => { dis(); sendApproval(true, evt.filepath, evt.tool, capturedAccordion, capturedDetails, capturedBodyContainer, capturedAiBubble, capturedMode); };
+                            rb.onclick = () => { dis(); sendApproval(false, evt.filepath, evt.tool, capturedAccordion, capturedDetails, capturedBodyContainer, capturedAiBubble, capturedMode); };
+                            bc.appendChild(ab); bc.appendChild(rb); aDiv.appendChild(bc);
+                            capturedDetails.appendChild(aDiv);
+                            capturedDetails.scrollTop = capturedDetails.scrollHeight;
+                        }
+                        if (capturedBodyContainer) {
+                            capturedBodyContainer.dataset.waitingForApproval = 'true';
+                            if (!resumeAccumulated) capturedBodyContainer.innerHTML = `<span style="color:orange;font-style:italic;">⏳ Workflow paused — approve or reject the file operation above to continue.</span>`;
+                        }
+                        return; // wait for next approval; do not call setGenerating(false)
+                    } else if (evt.event === 'done') {
+                        if (resumeAccumulated && capturedBodyContainer) {
+                            try {
+                                capturedBodyContainer.innerHTML = typeof marked !== 'undefined' ? marked.parse(resumeAccumulated) : resumeAccumulated;
+                            } catch { capturedBodyContainer.textContent = resumeAccumulated; }
+                        } else if (capturedBodyContainer && !resumeAccumulated) {
+                            capturedBodyContainer.innerHTML = `<span style="color:var(--accent-emerald);">✅ Workflow completed successfully.</span>`;
+                        }
+                        if (capturedAccordion) {
+                            const sp = capturedAccordion.querySelector('.thinking-spinner');
+                            const st = capturedAccordion.querySelector('.thinking-status');
+                            if (sp) { sp.className=''; sp.textContent='✓'; sp.style.color='var(--accent-emerald)'; sp.style.fontWeight='bold'; }
+                            if (st) st.textContent = 'Workflow resumed and completed';
+                        }
+                        addLog('Resumed workflow completed.', 'SUCCESS');
+                    } else if (evt.event === 'error') {
+                        addLog('Resume stream error: ' + evt.message, 'ERROR');
+                        if (capturedBodyContainer) capturedBodyContainer.innerHTML = `<span style="color:var(--accent-red);">❌ Error during resume: ${escapeHtml(evt.message)}</span>`;
+                    }
+                }
+            }
+        } catch (streamErr) {
+            addLog('Failed to open resume stream: ' + streamErr.message, 'ERROR');
+        } finally {
+            AppState.setGenerating(false);
         }
     } catch (e) {
         addLog('Failed to send approval: ' + e.message, 'ERROR');
+        AppState.setGenerating(false);
     }
 }
 

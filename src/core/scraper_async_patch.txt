@@ -1,0 +1,25 @@
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    response = None
+    try:
+        logger.info(f"Crawling web page (async): {url}")
+        session = await _get_aiohttp_session()
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(url)
+        
+        # SEC-02: Use IP pinning to prevent DNS rebinding attacks
+        if pinned_ip:
+            pinned_url = urllib.parse.urlunparse(
+                parsed_url._replace(netloc=f"{pinned_ip}:{parsed_url.port or (443 if parsed_url.scheme == "https" else 80)}")
+            )
+            headers["Host"] = parsed_url.hostname
+            async with session.get(pinned_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                response = resp
+        else:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                response = resp

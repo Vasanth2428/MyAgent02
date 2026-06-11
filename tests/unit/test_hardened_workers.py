@@ -47,7 +47,7 @@ class TestHardenedWorkers(unittest.TestCase):
 
         res = code_critic_worker_node(state)
         # It should not append a retry task to the plan, nor append RETRY_REQUIRED
-        self.assertEqual(res["critic_retry_count"], 2)
+        self.assertEqual(res["critic_retry_count"], 0)
         self.assertNotIn("plan", res)
         self.assertNotIn("RETRY_REQUIRED", res["messages"][0].content)
         self.assertIn("Max validation retry limit reached", res["messages"][0].content)
@@ -62,7 +62,7 @@ class TestHardenedWorkers(unittest.TestCase):
         }
         res_first = code_critic_worker_node(state_first)
         self.assertEqual(res_first["critic_retry_count"], 1)
-        self.assertTrue(any("FIX ERROR: Review code critic feedback" in p for p in res_first["plan"]))
+        self.assertTrue(any("FIX:" in p for p in res_first["plan"]))
         self.assertIn("RETRY_REQUIRED", res_first["messages"][0].content)
 
     @patch("src.agents.critic_worker.get_reasoning_model")
@@ -73,7 +73,7 @@ class TestHardenedWorkers(unittest.TestCase):
         mock_response.content = "Contradiction detected! RETRY_REQUIRED"
         mock_llm.invoke.return_value = mock_response
         mock_get_critic.return_value = mock_llm
-
+    
         state = {
             "messages": [HumanMessage(content="Query")],
             "scratchpad": "Some conflicting findings",
@@ -81,11 +81,12 @@ class TestHardenedWorkers(unittest.TestCase):
             "critic_retry_count": 2,
             "plan": ["Original plan"]
         }
-
+    
         res = critic_worker_node(state)
-        # It should strip RETRY_REQUIRED and not append error task
+        # It should strip RETRY_REQUIRED and not append error task, but should suggest an alternative approach
         self.assertEqual(res["critic_retry_count"], 2)
-        self.assertNotIn("plan", res)
+        self.assertIn("plan", res)
+        self.assertTrue(any("ALTERNATIVE APPROACH" in p for p in res["plan"]))
         self.assertNotIn("RETRY_REQUIRED", res["messages"][0].content)
         self.assertIn("Max validation retry limit reached", res["messages"][0].content)
 

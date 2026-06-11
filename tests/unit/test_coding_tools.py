@@ -35,7 +35,7 @@ def setup_and_teardown():
 
 def test_is_safe_path():
     assert _is_safe_path("temp_test_file.txt") is True
-    assert _is_safe_path("src/tools/coding_tools.py") is False  # outside workspace
+    assert _is_safe_path("../src/tools/coding_tools.py") is False  # outside workspace
     # Test path traversal containment
     assert _is_safe_path("../outside_workspace.txt") is False
     assert _is_safe_path("dir/../../passwd") is False

@@ -729,14 +729,17 @@ class RAGContextEngine:
             # Conditionally run expensive features based on confidence
             if self.pipeline_config.should_use_full_pipeline(top_score):
                 logger.info(f"[P1: EXPANSION] Low confidence ({top_score:.2f}), running full pipeline...")
-                # Concurrent expansion and HyDE Tasks
-                expand_task = asyncio.create_task(self._phase_expand_async(query, mode, latencies))
-                hyde_task = asyncio.create_task(self._phase_hyde_async(query, mode, latencies))
+                # Issue #7: Run expansion and HyDE sequentially instead of concurrently
+                # to prevent LLM API contention and vector store connection pool exhaustion.
+                search_queries = await self._phase_expand_async(query, mode, latencies)
                 
-                search_queries = await expand_task
-                hyde_doc = await hyde_task
-                if hyde_doc:
-                    search_queries.append(hyde_doc)
+                # Only run HyDE if expansion didn't produce sufficient variations
+                if len(search_queries) < 3:
+                    hyde_doc = await self._phase_hyde_async(query, mode, latencies)
+                    if hyde_doc:
+                        search_queries.append(hyde_doc)
+                else:
+                    logger.info("[P1.5: HyDE] Skipped: expansion already produced sufficient variations.")
             else:
                 logger.info(f"[P1: EXPANSION] High confidence ({top_score:.2f}), skipping expansion/HyDE for speed.")
         
@@ -907,12 +910,14 @@ class RAGContextEngine:
                 for node_name, state_delta in event.items():
                     yield {"event": "node_start", "node": node_name}
                     
-                    # Check if this is coding_worker waiting for approval - emit blocked_tool before workflow ends
+                    # Check if this is coding_worker waiting for approval - emit blocked_tool then
+                    # a waiting_for_approval event (NOT done) so the frontend keeps its interactive
+                    # approval UI alive instead of collapsing the stream.
                     if node_name == "coding_worker_node" and state_delta.get("waiting_for_approval"):
                         approval_filepath = state_delta.get("approval_filepath", "")
                         approval_tool = state_delta.get("approval_tool", "")
                         yield {"event": "blocked_tool", "filepath": approval_filepath, "tool": approval_tool}
-                        yield {"event": "done", "stats": {}}  # Signal completion so UI can render
+                        yield {"event": "waiting_for_approval", "filepath": approval_filepath, "tool": approval_tool}
                     
                     if node_name == "supervisor_node":
                         llm_call_count += 1

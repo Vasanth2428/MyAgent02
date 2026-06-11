@@ -56,20 +56,31 @@ def run_query(query: str, thread_id: str = "default"):
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "next_agent": "supervisor",
-        "context_notes": [],
         "steps_remaining": 10,
-        "final_answer": "",
         "plan": [],
-        "scratchpad": "",
         "current_task": "",
         "worker_complete": {},
-        "worker_outputs": {},
-        "parallel_tasks": [],
+        "retry_counter": 0,
         "critic_retry_count": 0,
         "waiting_for_approval": False,
+        "approval_requested": None,
         "approval_filepath": "",
-        "approval_tool": "",
-        "pending_file_approvals": {}
+        "pending_file_approvals": {},
+        "session_id": "default_session",
+        # Pipeline 1: Retrieval context cache references
+        "context_cache_id": None,
+        "active_document_ids": [],
+        "task_hashes": [],
+        "file_status_flags": {},
+        # Worker output references (to prevent state bloat)
+        "worker_output_ids": {},
+        "worker_output_summaries": {},
+        "scratchpad_references": [],
+        # TEMPORARY FIELDS FOR WORKER NODE COMPATIBILITY (cleared after processing)
+        "scratchpad": "",
+        "worker_outputs": {},
+        # Pipeline 2: Execution routing (already covered above)
+        "final_answer": ""
     }
     
     

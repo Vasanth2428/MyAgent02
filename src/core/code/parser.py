@@ -272,124 +272,31 @@ def _extract_calls(node, calls: List[Dict[str, Any]], filepath: str, content: by
         _extract_calls(child, calls, filepath, content)
 
 
+class ParserInitializationException(Exception):
+    """Raised when a code file cannot be parsed because its language is unsupported or unavailable."""
+
+
 def parse_code_file(filepath: str, language: str = "python") -> Dict[str, Any]:
     """
     Parse a source file using Tree-sitter and extract structured metadata.
     Returns a dictionary compatible with the original AST parser output format.
+    Enforces strict language safety: if tree-sitter fails for any reason,
+    raises ParserInitializationException.
     """
     logger.info(f"Parsing {language} source file: {filepath}")
     try:
         with open(filepath, "rb") as f:
             content = f.read()
-            
+
         result = _parse_with_tree_sitter(content, filepath, language)
         return result
     except ImportError as e:
-        # Fallback to ast if tree-sitter is not available
-        logger.warning(f"Tree-sitter not available, falling back to ast: {e}")
-        return _parse_with_ast_fallback(filepath, language)
+        raise ParserInitializationException(
+            f"Tree-sitter language module for '{language}' not installed: {e}"
+        ) from e
+    except ParserInitializationException:
+        raise
     except Exception as e:
-        logger.error(f"Error parsing file {filepath} via Tree-sitter: {e}")
-        return {
-            "symbols": [],
-            "imports": [],
-            "calls": [],
-            "filepath": filepath,
-            "lines_count": 0,
-            "error": str(e),
-        }
-
-
-def _parse_with_ast_fallback(filepath: str, language: str = "python") -> Dict[str, Any]:
-    """Fallback to original AST parser if tree-sitter is unavailable. Only supports Python."""
-    import ast
-    
-    if language != "python":
-        return {
-            "symbols": [],
-            "imports": [],
-            "calls": [],
-            "filepath": filepath,
-            "lines_count": 0,
-            "error": f"AST fallback only supports Python, got {language}",
-        }
-    
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-            
-        tree = ast.parse(content, filename=filepath)
-        
-        symbols = []
-        imports = []
-        calls = []
-        
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                symbols.append({
-                    "type": "class",
-                    "name": node.name,
-                    "filepath": filepath,
-                    "start_line": node.lineno,
-                    "end_line": getattr(node, "end_lineno", node.lineno),
-                    "docstring": ast.get_docstring(node) or "",
-                    "bases": [ast.unparse(base) for base in node.bases] if node.bases else [],
-                    "methods": [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))],
-                })
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                args = [{"name": arg.arg, "type": ""} for arg in node.args.args]
-                if node.returns:
-                    try:
-                        ret_type = ast.unparse(node.returns)
-                    except:
-                        ret_type = ""
-                else:
-                    ret_type = ""
-                symbols.append({
-                    "type": "method" if any(isinstance(p, ast.ClassDef) for p in ast.walk(tree) if hasattr(p, "body") and node in getattr(p, "body", [])) else "function",
-                    "name": node.name,
-                    "filepath": filepath,
-                    "parent_class": "",
-                    "start_line": node.lineno,
-                    "end_line": getattr(node, "end_lineno", node.lineno),
-                    "docstring": ast.get_docstring(node) or "",
-                    "arguments": args,
-                    "return_type": ret_type,
-                })
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append({
-                        "type": "import",
-                        "name": alias.name,
-                        "asname": alias.asname,
-                        "line": node.lineno,
-                        "filepath": filepath,
-                    })
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                for alias in node.names:
-                    imports.append({
-                        "type": "import_from",
-                        "module": module,
-                        "name": alias.name,
-                        "asname": alias.asname,
-                        "line": node.lineno,
-                        "filepath": filepath,
-                    })
-                    
-        return {
-            "symbols": symbols,
-            "imports": imports,
-            "calls": calls,
-            "filepath": filepath,
-            "lines_count": len(content.splitlines()),
-        }
-    except Exception as e:
-        return {
-            "symbols": [],
-            "imports": [],
-            "calls": [],
-            "filepath": filepath,
-            "lines_count": 0,
-            "error": str(e),
-        }
+        raise ParserInitializationException(
+            f"Failed to parse file '{filepath}' with language '{language}': {e}"
+        ) from e

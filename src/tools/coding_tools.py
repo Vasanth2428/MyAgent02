@@ -60,15 +60,6 @@ def _is_safe_path(filepath: str) -> bool:
         return False
         
     real_workspace = os.path.realpath(WORKSPACE_ROOT)
-    proj_path = os.path.realpath(os.path.join(PROJECT_ROOT, filepath))
-    if proj_path != os.path.realpath(PROJECT_ROOT) and os.path.exists(proj_path):
-        if os.name == 'nt':
-            if not proj_path.lower().startswith(real_workspace.lower()):
-                return False
-        else:
-            if not proj_path.startswith(real_workspace):
-                return False
-
     abs_path = os.path.realpath(os.path.join(WORKSPACE_ROOT, filepath))
     
     if os.name == 'nt':

@@ -2,9 +2,10 @@ import os
 import logging
 from typing import Set, Dict, Any, List
 
-from src.core.code.parser import parse_code_file
+from src.core.code.parser import parse_code_file, ParserInitializationException
 from src.core.code.symbol_table import SymbolTable
 from src.core.code.dependency_graph import DependencyGraph
+from src.core.code.parse_cache import ParseCache
 
 logger = logging.getLogger("RAG.CodeIndexer")
 
@@ -33,6 +34,8 @@ class CodeIndexer:
         self.symbol_table = SymbolTable()
         self.dependency_graph = DependencyGraph()
         self.indexed_files: Set[str] = set()
+        self.skipped_files: Set[str] = set()  # Issue #8: Track files with partial/failed parses
+        self._parse_cache = ParseCache(self.project_root)  # Issue #9: Incremental indexing
 
         # Folders to exclude from indexing
         self.exclude_dirs = {
@@ -46,6 +49,11 @@ class CodeIndexer:
         self.symbol_table.clear()
         self.dependency_graph.clear()
         self.indexed_files.clear()
+        self.skipped_files.clear()
+
+        # Issue #9: Load parse cache for incremental indexing
+        self._parse_cache.load()
+        cache_hits = 0
         
         files_count = 0
         language_counts: Dict[str, int] = {}
@@ -67,12 +75,45 @@ class CodeIndexer:
                     files_count += 1
                     
         logger.info(f"Tree-sitter indexing completed. Total files parsed: {files_count} ({language_counts})")
+        # Issue #8: Log summary of files with partial/failed parses
+        if self.skipped_files:
+            logger.warning(f"Partial/failed parses ({len(self.skipped_files)} files): {', '.join(sorted(self.skipped_files))}")
+
+        # Issue #9: Save updated parse cache
+        self._parse_cache.save()
+        logger.info(f"Parse cache: {files_count} files indexed")
 
     def _index_file(self, full_path: str, rel_path: str, language: str = "python") -> None:
         """Parse a single file and load definitions into symbol table and dependency graph."""
-        res = parse_code_file(full_path, language=language)
+        # Issue #9: Use cached result if file hasn't changed
+        if not self._parse_cache.is_stale(full_path):
+            res = self._parse_cache.get_cached(full_path)
+            if res is not None:
+                self.indexed_files.add(rel_path)
+                self._load_result_into_tables(res, rel_path)
+                return
+
+        try:
+            res = parse_code_file(full_path, language=language)
+        except ParserInitializationException as e:
+            logger.warning(f"Failed to parse {rel_path}: {e}")
+            self.skipped_files.add(rel_path)
+            return
+
         self.indexed_files.add(rel_path)
-        
+
+        # Update cache with fresh parse result
+        self._parse_cache.update(full_path, res)
+
+        # Issue #8: Track files with partial or failed parses
+        if res.get("partial") or res.get("error"):
+            warning = res.get("warning", res.get("error", "Unknown parse issue"))
+            logger.warning(f"Partial/failed parse for {rel_path}: {warning}")
+            self.skipped_files.add(rel_path)
+        self._load_result_into_tables(res, rel_path)
+
+    def _load_result_into_tables(self, res: Dict[str, Any], rel_path: str) -> None:
+        """Load parsed symbols, imports, and calls into the symbol table and dependency graph."""
         # 1. Populate Symbol Table
         for sym in res.get("symbols", []):
             # Convert filepath in symbol to relative path for portability
@@ -86,9 +127,5 @@ class CodeIndexer:
             self.dependency_graph.add_import(rel_path.replace("\\", "/"), module_name)
             
         # 3. Populate Dependency Graph (Calls)
-        # We can map calls if we have caller functions/classes.
-        # For simplicity, we register function call nodes.
         for call in res.get("calls", []):
-            # Match callers based on active symbols inside file if needed.
-            # Here we just record that caller (filepath) calls the symbol.
             self.dependency_graph.add_call(rel_path.replace("\\", "/"), call["name"])
