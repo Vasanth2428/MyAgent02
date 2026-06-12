@@ -8,6 +8,43 @@ logger = logging.getLogger("RAG.Services.Overflow")
 tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
 
 
+def _head_tail_truncate(text: str, max_tokens: int, query: str = "") -> str:
+    """
+    RAG-01: Strategic head/tail truncation to prevent lost-in-the-middle problem.
+    
+    Places important content at both beginning and end of context buffer,
+    with less critical information in the middle where LLMs pay less attention.
+    """
+    if not text:
+        return text
+    
+    # Encode the text to get token list
+    tokens = tokenizer.encode(text)
+    total_tokens = len(tokens)
+    
+    if total_tokens <= max_tokens:
+        return text
+    
+    # Allocate token budget: head + tail + middle
+    head_tokens = max_tokens // 3
+    tail_tokens = max_tokens // 3
+    middle_tokens = max_tokens - head_tokens - tail_tokens
+    
+    # Get head portion (start of text)
+    head_text = tokenizer.decode(tokens[:head_tokens])
+    
+    # Get tail portion (end of text)
+    tail_text = tokenizer.decode(tokens[-tail_tokens:])
+    
+    # Get middle portion
+    middle_text = tokenizer.decode(tokens[head_tokens:head_tokens + middle_tokens])
+    
+    # Combine with markers for LLM attention
+    result = f"{head_text}\n\n[... core context truncated for focus ...]\n\n{middle_text}\n\n[... key context preserved at end ...]\n\n{tail_text}"
+    
+    return result
+
+
 class ContextOverflowService:
     """
     Handles what happens when there's too much context for the AI.
@@ -118,19 +155,17 @@ class ContextOverflowService:
                 total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
                 overflow_steps.append(f"   - Re-compressed knowledge source from {old_doc_tokens} to {doc_tokens} tokens (Target budget: {allowed_doc_budget}).")
             
-            # Step 3: Hard Truncation
+            # Step 3: Head/Tail Truncation (RAG-01 fix)
             if total_prompt_tokens > context_limit:
-                overflow_steps.append("✂️ Phase 3: Hard Truncation of prompt payload...")
+                overflow_steps.append("✂️ Phase 3: Head/Tail Context Placement (Lost-in-Middle Mitigation)...")
                 allowed_doc_budget = context_limit - instruction_tokens - mem_tokens - query_tokens - 25
                 allowed_doc_budget = max(5, allowed_doc_budget)
                 
-                doc_tkn_list = tokenizer.encode(compressed_docs)
-                truncated_list = doc_tkn_list[:allowed_doc_budget]
-                compressed_docs = tokenizer.decode(truncated_list)
+                compressed_docs = _head_tail_truncate(compressed_docs, allowed_doc_budget, query)
                 
                 doc_tokens = count_tokens_fn(compressed_docs)
                 total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
-                overflow_steps.append(f"   - Hard truncated remaining context from {old_doc_tokens} to {doc_tokens} tokens.")
+                overflow_steps.append(f"   - Head/tail truncated context to {doc_tokens} tokens (keeps key info at both ends).")
             
             final_context = f"### MEMORY\n{memory_text}\n\n### KNOWLEDGE\n{compressed_docs}"
             overflow_steps.append(f"✅ RECOVERY COMPLETE: Prompt size is now {total_prompt_tokens} tokens (under {context_limit} limit).")
@@ -228,19 +263,17 @@ class ContextOverflowService:
                 total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
                 overflow_steps.append(f"   - Re-compressed knowledge source from {old_doc_tokens} to {doc_tokens} tokens (Target budget: {allowed_doc_budget}).")
             
-            # Step 3: Hard Truncation
+            # Step 3: Head/Tail Truncation (RAG-01 fix)
             if total_prompt_tokens > context_limit:
-                overflow_steps.append("✂️ Phase 3: Hard Truncation of prompt payload...")
+                overflow_steps.append("✂️ Phase 3: Head/Tail Context Placement (Lost-in-Middle Mitigation)...")
                 allowed_doc_budget = context_limit - instruction_tokens - mem_tokens - query_tokens - 25
                 allowed_doc_budget = max(5, allowed_doc_budget)
                 
-                doc_tkn_list = tokenizer.encode(compressed_docs)
-                truncated_list = doc_tkn_list[:allowed_doc_budget]
-                compressed_docs = tokenizer.decode(truncated_list)
+                compressed_docs = _head_tail_truncate(compressed_docs, allowed_doc_budget, query)
                 
                 doc_tokens = count_tokens_fn(compressed_docs)
                 total_prompt_tokens = instruction_tokens + mem_tokens + doc_tokens + query_tokens + 15
-                overflow_steps.append(f"   - Hard truncated remaining context from {old_doc_tokens} to {doc_tokens} tokens.")
+                overflow_steps.append(f"   - Head/tail truncated context to {doc_tokens} tokens (keeps key info at both ends).")
             
             final_context = f"### MEMORY\n{memory_text}\n\n### KNOWLEDGE\n{compressed_docs}"
             overflow_steps.append(f"✅ RECOVERY COMPLETE: Prompt size is now {total_prompt_tokens} tokens (under {context_limit} limit).")

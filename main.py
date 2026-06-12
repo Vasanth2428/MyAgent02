@@ -98,22 +98,9 @@ async def lifespan(app: FastAPI):
         pipeline_config = PipelineConfig.from_env()
         logger.info(f"Pipeline config: hyde={pipeline_config.enable_hyde}, expansion={pipeline_config.enable_expansion}, reranking={pipeline_config.enable_reranking}, compression={pipeline_config.enable_compression}")
         
-        # Setup safe checkpoints folder path
-        import os
-        safe_dir = os.path.join(os.getcwd(), 'checkpoints')
-        os.makedirs(safe_dir, exist_ok=True)
-        db_path = os.getenv("CHECKPOINTER_DB_PATH", "checkpoints.db")
-        from src.graph.checkpointer import validate_db_path
-        db_path = validate_db_path(db_path)
-        full_path = os.path.join(safe_dir, db_path)
+        from src.graph.checkpointer import setup_async_checkpointer
         
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        
-        logger.info(f"Using AsyncSqliteSaver with database: {full_path}")
-        async with AsyncSqliteSaver.from_conn_string(full_path) as checkpointer:
-            await checkpointer.setup()
-            
-            # Pre-warm heavy ML models to eliminate first-query latency spikes
+        async with setup_async_checkpointer() as checkpointer:
             logger.info("Pre-warming local embedding and reranker models...")
             _ = retriever.embedding_model
             from src.core.reranker import _get_cross_encoder
@@ -176,9 +163,6 @@ class CachedStaticFiles(StaticFiles):
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
-
-# Ensure checkpoints directory exists
-os.makedirs("checkpoints", exist_ok=True)
 
 
 # ------------------------------------------------------------------
@@ -407,6 +391,8 @@ async def approve_changes(request: ApprovalRequest):
     from src.agents.coding_worker import get_pending_approval, execute_pending_approval, clear_pending_approval
     from langchain_core.messages import HumanMessage, AIMessage
     from src.graph.workflow import get_graph_config
+    from src.graph.supervisor import approve_file
+    from src.tools.coding_tools import _get_absolute_path
     
     session_id = request.session_id
     pending = get_pending_approval(session_id)
@@ -417,92 +403,47 @@ async def approve_changes(request: ApprovalRequest):
     config = get_graph_config(session_id)
     
     if request.approve:
-        approval_token = f"[APPROVED: {pending['filepath']}]"
-        
-        from src.tools.coding_tools import _get_absolute_path
-        from src.graph.supervisor import approve_file
         try:
             abs_path = os.path.realpath(_get_absolute_path(pending['filepath']))
             approve_file(session_id, abs_path)
         except Exception as e:
             logger.warning(f"Failed to register approval for {pending['filepath']}: {e}")
             
-        async def resume_workflow():
-            try:
-                if hasattr(rag.multi_agent_checkpointer, "aget_tuple"):
-                    checkpoint = await rag.multi_agent_checkpointer.aget_tuple(config)
-                else:
-                    checkpoint = rag.multi_agent_checkpointer.get_tuple(config)
-                
-                if checkpoint:
-                    current_scratchpad = ""
-                    if hasattr(rag, "multi_agent_graph") and rag.multi_agent_graph:
-                        try:
-                            if hasattr(rag.multi_agent_graph, "aget_state"):
-                                state_val = await rag.multi_agent_graph.aget_state(config)
-                                if state_val and state_val.values:
-                                    current_scratchpad = state_val.values.get("scratchpad", "")
-                            elif hasattr(rag.multi_agent_graph, "get_state"):
-                                state_val = rag.multi_agent_graph.get_state(config)
-                                if state_val and state_val.values:
-                                    current_scratchpad = state_val.values.get("scratchpad", "")
-                        except Exception as state_err:
-                            logger.warning(f"Failed to get state via graph state APIs: {state_err}")
-                            
-                    if not current_scratchpad and hasattr(checkpoint, "checkpoint") and checkpoint.checkpoint:
-                        channel_values = checkpoint.checkpoint.get("channel_values", {})
-                        current_scratchpad = channel_values.get("scratchpad", "")
-                        
-                    new_scratchpad = current_scratchpad + f"\n{approval_token}"
-                    
-                    update_state = {
-                        "scratchpad": new_scratchpad,
-                        "waiting_for_approval": False,
-                        "worker_complete": {"coding_worker": False}
-                    }
-                    
-                    if hasattr(rag.multi_agent_graph, "aupdate_state"):
-                        await rag.multi_agent_graph.aupdate_state(config, update_state)
-                    else:
-                        rag.multi_agent_graph.update_state(config, update_state)
-                    
-                    return {"status": "approved", "message": "State updated, resuming workflow..."}
-                
-                result = execute_pending_approval(session_id)
-                return {"status": "approved", "result": result, "message": "Tool executed directly (fallback)"}
-            except Exception as e:
-                return {"status": "approved", "message": f"Approval recorded: {str(e)}"}
+        result = execute_pending_approval(session_id)
+        logger.info(f"Approval executed: {result}")
         
-        result = await resume_workflow()
-        return result
+        if hasattr(rag.multi_agent_graph, "aupdate_state"):
+            await rag.multi_agent_graph.aupdate_state(config, {
+                "scratchpad": f"\n- [SYSTEM HITL]: User approved modifications. Action result: {result}",
+                "waiting_for_approval": False,
+                "pending_file_approvals": {}
+            })
+        else:
+            rag.multi_agent_graph.update_state(config, {
+                "scratchpad": f"\n- [SYSTEM HITL]: User approved modifications. Action result: {result}",
+                "waiting_for_approval": False,
+                "pending_file_approvals": {}
+            })
+        
+        return {"status": "approved", "result": result, "message": "Tool executed successfully"}
     else:
         clear_pending_approval(session_id)
         try:
-            if hasattr(rag.multi_agent_checkpointer, "aget_tuple"):
-                checkpoint = await rag.multi_agent_checkpointer.aget_tuple(config)
-            else:
-                checkpoint = rag.multi_agent_checkpointer.get_tuple(config)
-            
-            if checkpoint:
-                update_state = {
+            if hasattr(rag.multi_agent_graph, "aupdate_state"):
+                await rag.multi_agent_graph.aupdate_state(config, {
                     "waiting_for_approval": False,
-                    "worker_complete": {"coding_worker": True},
+                    "pending_file_approvals": {},
                     "worker_outputs": {"coding_worker": "User rejected file changes."}
-                }
-                if hasattr(rag.multi_agent_graph, "aupdate_state"):
-                    await rag.multi_agent_graph.aupdate_state(config, update_state)
-                else:
-                    rag.multi_agent_graph.update_state(config, update_state)
+                })
+            else:
+                rag.multi_agent_graph.update_state(config, {
+                    "waiting_for_approval": False,
+                    "pending_file_approvals": {},
+                    "worker_outputs": {"coding_worker": "User rejected file changes."}
+                })
         except Exception:
             pass
         return {"status": "rejected"}
-
-
-
-if __name__ == "__main__":
-    import uvicorn
-    logger.info("Launching Uvicorn server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 @app.get("/resume_stream/{session_id}")
@@ -527,7 +468,6 @@ async def resume_stream(session_id: str):
                     for node_name, state_delta in event.items():
                         yield f"data: {json.dumps({'event': 'node_start', 'node': node_name})}\n\n"
 
-                        # Emit thought / observation so the UI accordion shows progress
                         worker_type = state_delta.get("worker_type", "") or node_name.replace("_node", "")
                         response = ""
                         if "worker_outputs" in state_delta and worker_type:
@@ -539,21 +479,41 @@ async def resume_stream(session_id: str):
                             yield f"data: {json.dumps({'event': 'thought', 'text': f'{worker_type}: {response[:120]}'})}\n\n"
                             yield f"data: {json.dumps({'event': 'observation', 'output': response})}\n\n"
 
-                        # If a nested approval is needed again, signal it
                         if state_delta.get("waiting_for_approval"):
                             approval_filepath = state_delta.get("approval_filepath", "")
                             approval_tool = state_delta.get("approval_tool", "")
                             yield f"data: {json.dumps({'event': 'blocked_tool', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
                             yield f"data: {json.dumps({'event': 'waiting_for_approval', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
-                            return  # Stop streaming; wait for next approval
+                            return
 
-                        # Emit final answer if available
                         if "final_answer" in state_delta and state_delta["final_answer"]:
                             answer = state_delta["final_answer"]
                             for chunk in answer.split(" "):
                                 yield f"data: {json.dumps({'event': 'answer_chunk', 'text': chunk + ' '})}\n\n"
 
-            yield f"data: {json.dumps({'event': 'done', 'stats': {}})}\n\n"
+                yield f"data: {json.dumps({'event': 'done', 'stats': {}})}\n\n"
+                
+                # Check if workflow is waiting for approval after graph completes
+                try:
+                    current_state = await rag.multi_agent_graph.aget_state(config)
+                    if current_state and current_state.values:
+                        state_values = current_state.values
+                        waiting_for_approval = state_values.get("waiting_for_approval", False)
+                        if waiting_for_approval:
+                            pending_file_approvals = state_values.get("pending_file_approvals", {})
+                            approval_filepath = state_values.get("approval_filepath", "")
+                            approval_tool = state_values.get("approval_tool", "")
+                            
+                            approval_packet = {
+                                "waiting_for_approval": True,
+                                "pending_file_approvals": pending_file_approvals,
+                                "approval_filepath": approval_filepath,
+                                "approval_tool": approval_tool,
+                                "text": "\n\n⚠️ **Action Required:** This modification requires security validation. Please approve or reject below."
+                            }
+                            yield f"data: {json.dumps(approval_packet)}\n\n"
+                except Exception as state_err:
+                    logger.warning(f"Failed to get state after stream: {state_err}")
         except asyncio.CancelledError:
             logger.warning(f"Client disconnected from resume stream for session {session_id}.")
         except Exception as e:
@@ -561,3 +521,9 @@ async def resume_stream(session_id: str):
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Launching Uvicorn server...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

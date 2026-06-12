@@ -3,7 +3,7 @@ import os
 import logging
 from typing import List
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Send
 from src.graph.worker_output_cache import store_worker_output, get_worker_output_summary
 
@@ -18,13 +18,14 @@ from src.graph.synthesizer import synthesizer_node
 from src.agents.scraper_worker import scraper_worker_node
 from src.agents.critic_worker import critic_worker_node
 from src.agents.report_worker import report_worker_node
-from src.agents.coding_worker import coding_worker_node
+from src.agents.coding_worker import coding_worker_node, tools as coding_tools
 from src.agents.code_critic_worker import code_critic_worker_node
 
 MAX_RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "20"))
 
 
 def route_based_on_next_agent(state: dict) -> str:
+
     next_agent = state.get("next_agent", "FINISH")
     steps = state.get("steps_remaining", 0)
     if steps <= 0:
@@ -55,7 +56,7 @@ def route_based_on_next_agent(state: dict) -> str:
 
 def route_after_coding_worker(state: dict) -> str:
     if state.get("waiting_for_approval"):
-        return END
+        return "supervisor_node"
     return "aggregate_parallel_results_node"
 
 
@@ -188,6 +189,11 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_node("synthesizer_node", synthesizer_node)
     workflow.add_node("aggregate_parallel_results_node", aggregate_parallel_results_node)
 
+    # Import ToolNode and create a tool node using coding worker tools
+    from langgraph.prebuilt import ToolNode
+    tool_node = ToolNode(coding_tools)
+    workflow.add_node("tool_node", tool_node)
+
     workflow.set_entry_point("supervisor_node")
 
     workflow.add_conditional_edges(
@@ -214,11 +220,15 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_edge("critic_worker_node", "aggregate_parallel_results_node")
     workflow.add_edge("report_worker_node", "aggregate_parallel_results_node")
 
+    # Connect coding worker to the tool node
+    workflow.add_edge("coding_worker_node", "tool_node")
+    # After tool execution, decide next step based on approval state
     workflow.add_conditional_edges(
-        "coding_worker_node",
+        "tool_node",
         route_after_coding_worker,
         {
             "aggregate_parallel_results_node": "aggregate_parallel_results_node",
+            "supervisor_node": "supervisor_node",
             END: END,
         },
     )
@@ -228,7 +238,11 @@ def build_multi_agent_graph(checkpointer=None):
     workflow.add_edge("synthesizer_node", END)
 
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        import os
+        safe_dir = os.path.join(os.getcwd(), 'checkpoints')
+        os.makedirs(safe_dir, exist_ok=True)
+        db_path = os.path.join(safe_dir, os.getenv("CHECKPOINTER_DB_PATH", "checkpoints.db"))
+        checkpointer = SqliteSaver.from_conn_string(db_path)
 
     graph = workflow.compile(checkpointer=checkpointer)
     logger.info("Multi-agent workflow compiled successfully.")

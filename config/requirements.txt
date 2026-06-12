@@ -1,5 +1,6 @@
 # Requirements for multi-agent system
 langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=0.1.0
 langchain-core>=0.3.0
 langchain-openai>=0.2.0
 langchain-community>=0.3.0

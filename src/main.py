@@ -35,6 +35,7 @@ def initialize_graph():
         if os.getenv("LANGCHAIN_API_KEY"):
             os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
     
+    from src.graph.checkpointer import setup_checkpointer
     checkpointer = setup_checkpointer()
     multi_agent_graph = build_multi_agent_graph(checkpointer)
     logger.info("Multi-agent graph initialized.")

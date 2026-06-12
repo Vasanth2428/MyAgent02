@@ -141,12 +141,12 @@ def test_supervisor_planning_output():
 
 
 def test_supervisor_detects_human_approval():
-    """Test that supervisor detects human approval and appends the approval token to the scratchpad."""
+    """Test that supervisor detects human approval and executes the pending tool."""
     state = {
         "messages": [
             HumanMessage(content="Write a new helper function"),
             AIMessage(content="I want to modify the file but direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval."),
-            HumanMessage(content="Yes, please approve and apply it.") # User approves
+            HumanMessage(content="Yes, please approve and apply it.")
         ],
         "plan": ["Write code"],
         "scratchpad": "Direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval.",
@@ -167,6 +167,39 @@ def test_supervisor_detects_human_approval():
         
         result = supervisor_node(state)
         
-        # Verify approval token was successfully added to the scratchpad
-        assert "[APPROVED: workspace/helper.py]" in result["scratchpad"]
+        assert "[SYSTEM HITL]: User approved modifications" in result["scratchpad"]
+
+
+def test_supervisor_detects_human_rejection():
+    """Test that supervisor detects human rejection and clears the approval state."""
+    state = {
+        "messages": [
+            HumanMessage(content="Write a new helper function"),
+            AIMessage(content="I want to modify the file but direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval."),
+            HumanMessage(content="No, cancel it.")
+        ],
+        "plan": ["Write code"],
+        "scratchpad": "Direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval.",
+        "steps_remaining": 10,
+        "waiting_for_approval": True,
+        "pending_file_approvals": {"workspace/helper.py": {"approved": False}}
+    }
+    
+    from src.graph.supervisor import SupervisorDecision
+    mock_llm_response = SupervisorDecision(
+        plan=["Write code"],
+        next_agent="coding_worker",
+        current_task="Create helper.py"
+    )
+    
+    with patch("src.graph.supervisor.get_routing_model") as mock_get_model:
+        mock_model = Mock()
+        mock_model.invoke.return_value = mock_llm_response
+        mock_get_model.return_value = mock_model
+        
+        result = supervisor_node(state)
+        
+        assert "[SYSTEM HITL]: User rejected the proposed file modifications" in result["scratchpad"]
+        assert result.get("waiting_for_approval") == False
+        assert result.get("pending_file_approvals") == {}
 

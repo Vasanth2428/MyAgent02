@@ -13,6 +13,7 @@ books, and helps you craft a response to your question.
 """
 
 import logging
+import os
 import time
 import asyncio
 from typing import Dict, Generator, AsyncGenerator, Optional, Any, List
@@ -100,14 +101,13 @@ class RAGContextEngine:
         return self.memory_service.get_memory(session_id)
 
     def delete_session(self, session_id: str) -> None:
-        """Deletes a session's history from memory.db and its checkpoints from checkpoints.db."""
+        """Deletes a session's history from memory.db and its checkpoints from the checkpointer."""
         logger.info(f"Deleting session history and checkpoints for session: {session_id}")
         self.persistent_memory.delete_session(session_id)
         self._clear_session_checkpoints(session_id)
 
     def _clear_session_checkpoints(self, session_id: str):
         """Clears all LangGraph checkpoints for the given session ID from the SQLite checkpointer database."""
-        import os
         import sqlite3
         from src.graph.checkpointer import validate_db_path
         
@@ -604,9 +604,6 @@ class RAGContextEngine:
          
         # Multi-Agent Mode Execution
         if mode == "agentic":
-            # Clear checkpoints in checkpoints.db for this session to avoid duplication/stale state
-            self._clear_session_checkpoints(session_id)
-
             from langchain_core.messages import HumanMessage, AIMessage
             from src.graph.workflow import get_graph_config
             import time as time_module
@@ -843,9 +840,6 @@ class RAGContextEngine:
         }
 
     async def _run_multi_agent_stream_async(self, query: str, session_id: str, source_filter: Optional[str] = None, context_limit: Optional[int] = None) -> AsyncGenerator[Dict, None]:
-        # Clear checkpoints in checkpoints.db for this session to avoid duplication/stale state
-        self._clear_session_checkpoints(session_id)
-
         from langchain_core.messages import HumanMessage, AIMessage
         from src.graph.workflow import get_graph_config
         import time as time_module
@@ -1132,14 +1126,18 @@ class RAGContextEngine:
             
             if self.pipeline_config.should_use_full_pipeline(top_score):
                 yield {"event": "thought", "text": "Low confidence detected, expanding query and generating HyDE document..."}
-                expand_task = asyncio.create_task(self._phase_expand_async(query, mode, latencies))
-                hyde_task = asyncio.create_task(self._phase_hyde_async(query, mode, latencies))
+                # Issue #7: Run expansion and HyDE sequentially instead of concurrently
+                # to prevent LLM API contention and vector store connection pool exhaustion.
+                search_queries = await self._phase_expand_async(query, mode, latencies)
                 
-                search_queries = await expand_task
-                hyde_doc = await hyde_task
-                if hyde_doc:
-                    search_queries.append(hyde_doc)
-                yield {"event": "action", "tool": "Query Expansion & HyDE", "input": f"Variations: {search_queries}"}
+                # Only run HyDE if expansion didn't produce sufficient variations
+                if len(search_queries) < 3:
+                    hyde_doc = await self._phase_hyde_async(query, mode, latencies)
+                    if hyde_doc:
+                        search_queries.append(hyde_doc)
+                    yield {"event": "action", "tool": "Query Expansion & HyDE", "input": f"Variations: {search_queries}"}
+                else:
+                    yield {"event": "action", "tool": "Query Expansion", "input": f"Variations: {search_queries}"}
             else:
                 yield {"event": "thought", "text": f"High confidence ({top_score:.2f}), using fast path..."}
         else:

@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Optional
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.types import Command
 from langchain_groq import ChatGroq
 
 from src.tools.coding_tools import read_files as _read_files
@@ -468,14 +469,16 @@ def coding_worker_node(state: dict) -> dict:
     if not is_compatible:
         rejection_msg = incompatibility_explanation or "I apologize, but I am strictly restricted to writing frontend code using the React framework and backend code in Python. I cannot assist with tasks outside of these capabilities."
         print(f"[CODING WORKER] Task rejected: {rejection_msg}")
-        return {
-            "messages": [AIMessage(content=rejection_msg, name="coding_worker")],
-            "scratchpad": scratchpad + f"\n- [Coding Worker]: Rejected task - {rejection_msg}",
-            "worker_complete": {"coding_worker": True},
-            "worker_outputs": {"coding_worker": rejection_msg},
-            "worker_type": "coding_worker",
-            "next_agent": "supervisor"
-        }
+        return Command(
+            update={
+                "messages": [AIMessage(content=rejection_msg, name="coding_worker")],
+                "scratchpad": scratchpad + f"\n- [Coding Worker]: Rejected task - {rejection_msg}",
+                "worker_complete": {"coding_worker": True},
+                "worker_outputs": {"coding_worker": rejection_msg},
+                "worker_type": "coding_worker",
+            },
+            goto="supervisor_node",
+        )
         
     print(f"\n[CODING WORKER] Initiating coding task: '{target_instruction[:60]}...'")
     
@@ -605,17 +608,19 @@ def coding_worker_node(state: dict) -> dict:
     # If blocked for approval, set the waiting_for_approval state
     waiting = blocked_for_approval is not None
     if waiting:
-        return {
-            "messages": [AIMessage(content=observation, name="coding_worker")],
-            "scratchpad": scratchpad + f"\n- [Coding Worker]: Blocked awaiting approval for {blocked_for_approval[0]} on {blocked_for_approval[1]}",
-            "worker_complete": {"coding_worker": False},
-            "worker_outputs": {"coding_worker": observation},
-            "worker_type": "coding_worker",
-            "next_agent": "supervisor",
-            "waiting_for_approval": True,
-            "approval_filepath": blocked_for_approval[1] if blocked_for_approval else "",
-            "approval_tool": blocked_for_approval[0] if blocked_for_approval else ""
-        }
+        return Command(
+            update={
+                "messages": [AIMessage(content=observation, name="coding_worker")],
+                "scratchpad": scratchpad + f"\n- [Coding Worker]: Blocked awaiting approval for {blocked_for_approval[0]} on {blocked_for_approval[1]}",
+                "worker_complete": {"coding_worker": False},
+                "worker_outputs": {"coding_worker": observation},
+                "worker_type": "coding_worker",
+                "waiting_for_approval": True,
+                "approval_filepath": blocked_for_approval[1] if blocked_for_approval else "",
+                "approval_tool": blocked_for_approval[0] if blocked_for_approval else "",
+            },
+            goto="supervisor_node",
+        )
     
     return {
         "messages": [AIMessage(content=final_explanation, name="coding_worker")],

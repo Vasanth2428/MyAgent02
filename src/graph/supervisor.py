@@ -12,6 +12,7 @@ from src.graph.worker_output_cache import (
     get_worker_output,
     get_worker_output_summary,
 )
+from src.core.blackboard_reference_store import store_reference, get_reference, compact_scratchpad
 
 logger = logging.getLogger("MultiAgent.Supervisor")
 
@@ -108,8 +109,8 @@ def supervisor_node(state: dict) -> dict:
     blocked_files = re.findall(r"execution of '[^']+' for '([^']+)' is blocked", scratchpad)
     blocked_files.extend(re.findall(r"Blocked awaiting approval for \w+ on ([^\s]+)", scratchpad))
     
-    # Check user's latest message for approval
     user_approved = False
+    user_rejected = False
     latest_user_message = ""
     for msg in reversed(messages):
         if isinstance(msg, dict) and msg.get("role") == "user":
@@ -119,30 +120,43 @@ def supervisor_node(state: dict) -> dict:
             latest_user_message = msg.content.lower()
             break
 
-    # Common approval words/phrases
     approval_phrases = ["approve", "yes", "ok", "go ahead", "apply", "proceed", "yep", "sure"]
+    rejection_phrases = ["reject", "no", "deny", "stop", "cancel", "dont", "don't"]
+    
     if any(phrase in latest_user_message for phrase in approval_phrases):
         user_approved = True
+    elif any(phrase in latest_user_message for phrase in rejection_phrases):
+        user_rejected = True
 
-    if blocked_files and user_approved:
-        # User has approved! Append approval token to scratchpad
-        from src.tools.coding_tools import _get_absolute_path
+    state_update_overrides = {}
+
+    if blocked_files:
         session_id = _get_session_id(state)
-        new_approvals = []
-        for filepath in blocked_files:
-            token = f"[APPROVED: {filepath}]"
-            if token not in scratchpad:
-                new_approvals.append(token)
-            try:
-                abs_path = os.path.realpath(_get_absolute_path(filepath))
-                approve_file(session_id, abs_path)
-            except Exception as e:
-                logger.warning(f"Failed to register approval for {filepath}: {e}")
-                
-        if new_approvals:
-            approval_str = " ".join(new_approvals)
-            scratchpad += f"\n- [SYSTEM]: User has approved changes: {approval_str}"
-            logger.info(f"Human-in-the-Loop: Approved file(s): {blocked_files}")
+        from src.agents.coding_worker import execute_pending_approval, clear_pending_approval
+        from src.tools.coding_tools import _get_absolute_path
+
+        if user_approved:
+            for filepath in blocked_files:
+                try:
+                    abs_path = os.path.realpath(_get_absolute_path(filepath.strip()))
+                    approve_file(session_id, abs_path)
+                except Exception as e:
+                    logger.warning(f"Failed to register approval for {filepath}: {e}")
+                    
+            execution_result = execute_pending_approval(session_id)
+            scratchpad += f"\n- [SYSTEM HITL]: User approved modifications. Action result: {execution_result}"
+            logger.info(f"Human-in-the-Loop Approved and Executed: {execution_result}")
+            
+            state_update_overrides["waiting_for_approval"] = False
+            state_update_overrides["pending_file_approvals"] = {}
+
+        elif user_rejected:
+            clear_pending_approval(session_id)
+            scratchpad += f"\n- [SYSTEM HITL]: User rejected the proposed file modifications."
+            logger.info("Human-in-the-Loop: User rejected changes.")
+            
+            state_update_overrides["waiting_for_approval"] = False
+            state_update_overrides["pending_file_approvals"] = {}
 
     summaries_text, summaries = _summarize_worker_outputs(state)
 
@@ -216,9 +230,9 @@ def supervisor_node(state: dict) -> dict:
         if i < last_human_index and name in worker_names:
             continue
         if role == "user":
-            routing_prompt.append(HumanMessage(content=content or ""))
+            routing_prompt.append(HumanMessage(content=content or "", name=name))
         elif role in ("assistant", "ai"):
-            routing_prompt.append(AIMessage(content=content or ""))
+            routing_prompt.append(AIMessage(content=content or "", name=name))
         elif content:
             routing_prompt.append(msg)
 
@@ -277,15 +291,28 @@ def supervisor_node(state: dict) -> dict:
     if next_agent not in valid_agents or next_agent == "FINISH":
         next_agent = "synthesizer"
 
+    # Compact scratchpad to prevent bloat (GRAPH-01)
+    compact_scratchpad_text = compact_scratchpad(scratchpad)
+    
+    # Dynamic plan expansion support (GRAPH-03)
+    # Check for "EXPAND PLAN" directives in scratchpad
+    import re
+    plan_expansion_match = re.search(r"EXPAND PLAN: (.+?)(?:\n|$)", scratchpad, re.IGNORECASE)
+    if plan_expansion_match and plan:
+        expansion_text = plan_expansion_match.group(1).strip()
+        plan_out.extend([f"EXPANDED: {expansion_text}"])
+    
     state_update = {
         "plan": plan_out,
         "next_agent": next_agent,
         "current_task": current_task,
         "steps_remaining": new_steps,
-        "scratchpad": scratchpad,
+        "scratchpad": compact_scratchpad_text,
         "retry_counter": new_retry_counter,
         "worker_output_summaries": summaries,
     }
+    
+    state_update.update(state_update_overrides)
 
     print(f"\n[SUPERVISOR] Next Node: '{next_agent}' | Task: '{current_task}' | Steps Left: {new_steps} | Retries: {new_retry_counter}")
     return state_update

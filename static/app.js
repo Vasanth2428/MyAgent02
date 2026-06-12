@@ -1150,11 +1150,17 @@ async function sendApproval(approved, filepath, tool,
 
         addLog('Changes approved — resuming workflow...', 'SUCCESS');
 
+        // Clear the old abortController since we're resuming
+        AppState.setGenerating(false, null);
+
+        // Create a fresh AbortController for the resume stream
+        const resumeController = new AbortController();
+
         // ---- Open a resume SSE stream and feed events into the existing bubble ----
         try {
             const resumeRes = await fetch(`${API_BASE}/resume_stream/${AppState.sid}`, {
                 method: 'GET',
-                signal: AppState.abortController ? AppState.abortController.signal : undefined
+                signal: resumeController.signal
             });
             if (!resumeRes.ok) throw new Error('Resume stream failed: ' + resumeRes.status);
 
@@ -1176,6 +1182,9 @@ async function sendApproval(approved, filepath, tool,
             }
 
             let resumeAccumulated = '';
+
+            // Set generating state for the resume stream
+            AppState.setGenerating(true, resumeController);
 
             while (true) {
                 const { value, done } = await reader.read();
@@ -1213,6 +1222,36 @@ async function sendApproval(approved, filepath, tool,
                         if (capturedBodyContainer) {
                             capturedBodyContainer.textContent = resumeAccumulated;
                             chatWindow.scrollTop = chatWindow.scrollHeight;
+                        }
+                    } else if (evt.waiting_for_approval) {
+                        // Handle the approval packet from the new backend structure
+                        const filepath = evt.approval_filepath || evt.filepath;
+                        const tool = evt.approval_tool || evt.tool;
+                        const details = evt.pending_file_approvals || {};
+                        
+                        if (capturedDetails) {
+                            addLog('Another file operation needs approval: ' + filepath, 'WARNING');
+                            const aDiv = document.createElement('div');
+                            aDiv.style.cssText = 'margin-top:10px;padding:12px;background:rgba(251,191,36,0.1);border:1px solid orange;border-radius:6px;';
+                            aDiv.innerHTML = `<span style="color:orange;font-weight:bold;">⚠️ ${escapeHtml(tool)} on '${escapeHtml(filepath)}'</span>`;
+                            const bc = document.createElement('div');
+                            bc.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
+                            const ab = document.createElement('button');
+                            ab.textContent = '✔ Approve';
+                            ab.style.cssText = 'padding:6px 14px;background:#16a34a;border:none;border-radius:4px;color:#fff;font-weight:bold;cursor:pointer;';
+                            const rb = document.createElement('button');
+                            rb.textContent = '✖ Reject';
+                            rb.style.cssText = 'padding:6px 14px;background:#dc2626;border:none;border-radius:4px;color:#fff;font-weight:bold;cursor:pointer;';
+                            const dis = () => { ab.disabled = true; rb.disabled = true; ab.style.opacity='0.5'; rb.style.opacity='0.5'; };
+                            ab.onclick = () => { dis(); sendApproval(true, filepath, tool, capturedAccordion, capturedDetails, capturedBodyContainer, capturedAiBubble, capturedMode); };
+                            rb.onclick = () => { dis(); sendApproval(false, filepath, tool, capturedAccordion, capturedDetails, capturedBodyContainer, capturedAiBubble, capturedMode); };
+                            bc.appendChild(ab); bc.appendChild(rb); aDiv.appendChild(bc);
+                            capturedDetails.appendChild(aDiv);
+                            capturedDetails.scrollTop = capturedDetails.scrollHeight;
+                        }
+                        if (capturedBodyContainer) {
+                            capturedBodyContainer.dataset.waitingForApproval = 'true';
+                            if (!resumeAccumulated) capturedBodyContainer.innerHTML = `<span style="color:orange;font-style:italic;">⏳ Workflow paused — approve or reject the file operation above to continue.</span>`;
                         }
                     } else if (evt.event === 'blocked_tool') {
                         // Another approval needed — show buttons again inside captured details

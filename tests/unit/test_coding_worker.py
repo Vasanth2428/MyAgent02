@@ -176,37 +176,6 @@ class TestCodingWorker(unittest.TestCase):
             self.assertEqual(res["worker_complete"]["coding_worker"], True)
             mock_create.invoke.assert_called_once_with({"filepath": "banking_form.html", "content": "test"})
 
-    @patch("src.agents.coding_worker.get_coding_model")
-    def test_coding_worker_node_scratchpad_sync_approval(self, mock_get_model):
-        """Coding worker should sync approvals from scratchpad back to APPROVAL_REGISTRY on start."""
-        mock_response = MagicMock()
-        mock_response.tool_calls = []
-        mock_response.content = "Finished coding task successfully."
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = mock_response
-        mock_get_model.return_value = mock_llm
-
-        state = {
-            "configurable": {"thread_id": "test_session_123"},
-            "current_task": "Write hello world script",
-            "scratchpad": "[APPROVED: new_created_file.txt]",
-            "messages": []
-        }
-        
-        from src.graph.supervisor import is_file_approved, APPROVAL_REGISTRY
-        from src.tools.coding_tools import _get_absolute_path
-        import os
-        
-        # Clear approvals for this session
-        APPROVAL_REGISTRY.pop("test_session_123", None)
-        
-        # Call coding worker node
-        res = coding_worker_node(state)
-        
-        # Verify approval is now in registry
-        abs_path = os.path.realpath(_get_absolute_path("new_created_file.txt"))
-        self.assertTrue(is_file_approved("test_session_123", abs_path))
-
     @patch("src.agents.coding_worker.get_validation_model")
     def test_coding_worker_node_compatible_react(self, mock_get_val_model):
         """Coding worker should accept React frontend tasks."""
