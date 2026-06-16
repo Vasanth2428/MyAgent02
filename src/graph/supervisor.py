@@ -74,6 +74,40 @@ def _get_session_id(state: dict) -> str:
     return config.get("thread_id", "default")
 
 
+def _approval_decision_from_message(message: str) -> str:
+    text = (message or "").strip().lower()
+    if not text:
+        return ""
+
+    approval_phrases = ["approve", "yes", "ok", "go ahead", "apply", "proceed", "yep", "sure"]
+    rejection_phrases = ["reject", "no", "deny", "stop", "cancel", "dont", "don't"]
+
+    if any(phrase in text for phrase in approval_phrases):
+        return "approved"
+    if any(phrase in text for phrase in rejection_phrases):
+        return "rejected"
+    return ""
+
+
+def _approval_decision_from_state(state: dict) -> str:
+    decision = str(state.get("approval_decision") or state.get("approval_requested") or "").strip().lower()
+    if decision in {"approved", "approve", "yes", "true", "1"}:
+        return "approved"
+    if decision in {"rejected", "reject", "no", "false", "0"}:
+        return "rejected"
+
+    for approval in (state.get("pending_file_approvals") or {}).values():
+        if not isinstance(approval, dict):
+            continue
+        item_decision = str(approval.get("decision") or approval.get("approved") or "").strip().lower()
+        if item_decision in {"approved", "approve", "yes", "true", "1"}:
+            return "approved"
+        if item_decision in {"rejected", "reject", "no", "false", "0"}:
+            return "rejected"
+
+    return ""
+
+
 def _display_scratchpad(scratchpad: str) -> str:
     if len(scratchpad) > 6000:
         return "[...earlier findings truncated...]\n" + scratchpad[-6000:]
@@ -92,50 +126,53 @@ def _summarize_worker_outputs(
 
 
 def supervisor_node(state: dict) -> dict:
-    model = get_routing_model()
 
     messages = state.get("messages", [])
     context_notes = state.get("context_notes") or []
     steps = state.get("steps_remaining", 10)
     plan = state.get("plan") or []
+    # Retain the compacted scratchpad for error messages, but primary context is in scratchpad_references
     scratchpad = state.get("scratchpad") or ""
+    scratchpad_references = state.get("scratchpad_references") or []
     worker_output_ids = state.get("worker_output_ids") or {}
     worker_output_summaries = state.get("worker_output_summaries") or {}
     file_status_flags = state.get("file_status_flags") or {}
     task_hashes = state.get("task_hashes") or []
     active_document_ids = state.get("active_document_ids") or []
     retry_counter = int(state.get("retry_counter") or 0)
-    import re
-    blocked_files = re.findall(r"execution of '[^']+' for '([^']+)' is blocked", scratchpad)
-    blocked_files.extend(re.findall(r"Blocked awaiting approval for \w+ on ([^\s]+)", scratchpad))
     
-    user_approved = False
-    user_rejected = False
+    # Structured HITL handling - avoid parsing scratchpad text
+    is_waiting = state.get("waiting_for_approval", False)
+    pending_approvals = state.get("pending_file_approvals") or {}
+    blocked_files = []
+    if is_waiting:
+        if state.get("approval_filepath"):
+            blocked_files.append(state.get("approval_filepath"))
+        elif pending_approvals:
+            blocked_files.extend(pending_approvals.keys())
+    
     latest_user_message = ""
     for msg in reversed(messages):
         if isinstance(msg, dict) and msg.get("role") == "user":
-            latest_user_message = msg.get("content", "").lower()
+            latest_user_message = msg.get("content", "")
             break
         elif hasattr(msg, "content") and (msg.__class__.__name__ == "HumanMessage" or getattr(msg, "type", "") == "human"):
-            latest_user_message = msg.content.lower()
+            latest_user_message = msg.content
             break
 
-    approval_phrases = ["approve", "yes", "ok", "go ahead", "apply", "proceed", "yep", "sure"]
-    rejection_phrases = ["reject", "no", "deny", "stop", "cancel", "dont", "don't"]
-    
-    if any(phrase in latest_user_message for phrase in approval_phrases):
-        user_approved = True
-    elif any(phrase in latest_user_message for phrase in rejection_phrases):
-        user_rejected = True
+    approval_decision = _approval_decision_from_state(state) or _approval_decision_from_message(latest_user_message)
 
     state_update_overrides = {}
 
     if blocked_files:
         session_id = _get_session_id(state)
-        from src.agents.coding_worker import execute_pending_approval, clear_pending_approval
+        from src.agents.coding_worker import execute_pending_approval, clear_pending_approval, get_pending_approval
         from src.tools.coding_tools import _get_absolute_path
 
-        if user_approved:
+        pending = get_pending_approval(session_id)
+        pending_tool_call_id = pending.get("tool_call_id") if pending else None
+
+        if approval_decision == "approved":
             for filepath in blocked_files:
                 try:
                     abs_path = os.path.realpath(_get_absolute_path(filepath.strip()))
@@ -144,23 +181,62 @@ def supervisor_node(state: dict) -> dict:
                     logger.warning(f"Failed to register approval for {filepath}: {e}")
                     
             execution_result = execute_pending_approval(session_id)
-            scratchpad += f"\n- [SYSTEM HITL]: User approved modifications. Action result: {execution_result}"
+            state_update_overrides["scratchpad_references"] = scratchpad_references + [
+                f"- [SYSTEM HITL]: User approved modifications. Action result: {execution_result}"]
             logger.info(f"Human-in-the-Loop Approved and Executed: {execution_result}")
             
             state_update_overrides["waiting_for_approval"] = False
             state_update_overrides["pending_file_approvals"] = {}
+            state_update_overrides["approval_decision"] = "approved"
+            state_update_overrides["coding_worker_resume_tool_result"] = execution_result
+            state_update_overrides["coding_worker_resume_tool_call_id"] = pending_tool_call_id
 
-        elif user_rejected:
+        elif approval_decision == "rejected":
             clear_pending_approval(session_id)
-            scratchpad += f"\n- [SYSTEM HITL]: User rejected the proposed file modifications."
+            state_update_overrides["scratchpad_references"] = scratchpad_references + [
+                "- [SYSTEM HITL]: User rejected the proposed file modifications."]
             logger.info("Human-in-the-Loop: User rejected changes.")
             
             state_update_overrides["waiting_for_approval"] = False
             state_update_overrides["pending_file_approvals"] = {}
+            state_update_overrides["approval_decision"] = "rejected"
+            state_update_overrides["coding_worker_resume_tool_result"] = "Error: User rejected the proposed file modifications."
+            state_update_overrides["coding_worker_resume_tool_call_id"] = pending_tool_call_id
+
+        else:
+            hitl_note = (
+                f"- [SYSTEM HITL]: Awaiting user approval for "
+                f"{state.get('approval_tool') or 'file operation'} on "
+                f"{state.get('approval_filepath') or ', '.join(blocked_files)}."
+            )
+            if hitl_note not in scratchpad_references:
+                scratchpad_references = scratchpad_references + [hitl_note]
+                state_update_overrides["scratchpad_references"] = scratchpad_references
+            logger.info("Human-in-the-Loop: Awaiting explicit approval; pausing workflow.")
+
+        pause_update = {
+            "plan": plan,
+            "next_agent": "supervisor",
+            "current_task": "",
+            "steps_remaining": steps,
+            "scratchpad": compact_scratchpad(scratchpad),
+            "retry_counter": retry_counter,
+            "worker_output_summaries": worker_output_summaries,
+            "worker_output_ids": worker_output_ids,
+            "scratchpad_references": scratchpad_references,
+            "waiting_for_approval": True,
+            "pending_file_approvals": pending_approvals,
+            "approval_filepath": state.get("approval_filepath", ""),
+            "approval_tool": state.get("approval_tool", ""),
+        }
+        pause_update.update(state_update_overrides)
+        return pause_update
 
     summaries_text, summaries = _summarize_worker_outputs(state)
 
-    display_scratchpad = _display_scratchpad(scratchpad)
+    # Reconstruct a readable scratchpad from references for display
+    reconstructed_scratchpad = "\n".join(scratchpad_references)
+    display_scratchpad = _display_scratchpad(reconstructed_scratchpad)
 
     blackboard_context = "\n".join(
         [
@@ -250,16 +326,17 @@ def supervisor_node(state: dict) -> dict:
         new_retry_counter = retry_counter + 1
         if retry_counter == 1:
             try:
-                model = model.with_config(temperature=0.2)
+                model = get_routing_model().with_config(temperature=0.2)
             except Exception:
                 pass
             injected_traceback = "\n[RETRY NOTE] Previous attempt failed. Prioritize the most recent worker summary and file_status_flags. Do not repeat prior path."
         else:
             injected_traceback = "\n[RETRY NOTE] Multiple retries occurred. Consider a different worker or strategy."
-    if state.get("worker_outputs"):
-        injected_traceback += "\n[RETRY NOTE] Existing worker outputs exist in memory; use cache-based summaries instead of re-running the same worker."
+    if state.get("worker_output_ids"):
+        injected_traceback += "\n[RETRY NOTE] Existing worker outputs exist in memory; use cached summaries instead of re-running the same worker."
 
     try:
+        model = get_routing_model()
         if injected_traceback:
             routing_prompt.append(SystemMessage(content=injected_traceback))
         response = model.invoke(routing_prompt)
@@ -270,11 +347,14 @@ def supervisor_node(state: dict) -> dict:
         error_str = str(e)
         logger.error(f"Supervisor routing/planning error: {error_str}")
         if "401" in error_str or "invalid_api_key" in error_str.lower():
-            scratchpad += "\n- [SYSTEM ERROR]: LLM API authentication failed. The API key may be expired or invalid. Please restart the server after updating your .env file."
+            err_msg = "\n- [SYSTEM ERROR]: LLM API authentication failed. The API key may be expired or invalid. Please restart the server after updating your .env file."
         elif "429" in error_str or "rate_limit" in error_str.lower():
-            scratchpad += "\n- [SYSTEM ERROR]: LLM API rate limit exceeded. Please wait and try again."
+            err_msg = "\n- [SYSTEM ERROR]: LLM API rate limit exceeded. Please wait and try again."
         else:
-            scratchpad += f"\n- [SYSTEM ERROR]: Supervisor LLM call failed: {error_str[:200]}"
+            err_msg = f"\n- [SYSTEM ERROR]: Supervisor LLM call failed: {error_str[:200]}"
+        scratchpad += err_msg
+        # Also record in persistent references for future context
+        state_update_overrides["scratchpad_references"] = (state_update_overrides.get("scratchpad_references", []) + [err_msg.strip()])
 
     valid_agents = [
         "rag_worker",
@@ -310,6 +390,8 @@ def supervisor_node(state: dict) -> dict:
         "scratchpad": compact_scratchpad_text,
         "retry_counter": new_retry_counter,
         "worker_output_summaries": summaries,
+        "worker_output_ids": worker_output_ids,
+        "scratchpad_references": scratchpad_references,
     }
     
     state_update.update(state_update_overrides)

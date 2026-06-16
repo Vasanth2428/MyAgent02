@@ -133,6 +133,24 @@ class WeaviateRetriever:
         self.local_code_chunks = []
         self.alpha = HYBRID_ALPHA_DEFAULT
 
+        # Load persistent local fallback database if Weaviate is not connected
+        import json
+        try:
+            if os.path.exists("data/local_docs.json"):
+                with open("data/local_docs.json", "r", encoding="utf-8") as f:
+                    self.local_docs = json.load(f)
+                logger.info(f"Loaded {len(self.local_docs)} documents from local persistent database.")
+        except Exception as e:
+            logger.warning(f"Failed to load local docs from persistent storage: {e}")
+
+        try:
+            if os.path.exists("data/local_code_chunks.json"):
+                with open("data/local_code_chunks.json", "r", encoding="utf-8") as f:
+                    self.local_code_chunks = json.load(f)
+                logger.info(f"Loaded {len(self.local_code_chunks)} code chunks from local persistent database.")
+        except Exception as e:
+            logger.warning(f"Failed to load local code chunks from persistent storage: {e}")
+
     def _get_embedding_model(self):
         from src.core.services.grounding_service import _get_shared_embedding_model
         return _get_shared_embedding_model()
@@ -180,58 +198,74 @@ class WeaviateRetriever:
         Returns:
             List of indexed document UUIDs for tracking.
         """
-        # Local fallback store
-        for doc in docs:
-            self.local_docs.append({
-                "text": doc,
-                "source": source,
-                "tags": tags or [],
-                "document_id": document_id or str(uuid.uuid4())
-            })
-            
-        if not self._connected:
-            logger.warning(f"Weaviate not connected - saved document to local memory for: {source}")
-            return [d["document_id"] for d in self.local_docs[-len(docs):]]
-
         t_start = time.time()
         
         # Compute content hash for integrity tracking
         import hashlib
         content_hash = hashlib.sha256(",".join(docs).encode()).hexdigest()[:16]
 
-        embeddings = self.embedding_model.encode(docs)
-        t_embed = time.time()
-        logger.debug(f"Generated {len(docs)} embeddings in {(t_embed - t_start)*1000:.1f}ms")
+        embeddings = None
+        try:
+            embeddings = self.embedding_model.encode(docs)
+        except Exception as e:
+            logger.warning(f"Could not generate embeddings for document: {e}")
 
-        indexed_uuids = []
+        t_embed = time.time()
+        
+        # Enhanced properties with lifecycle metadata
         doc_upload_time = time.time()
+        indexed_uuids = []
+
+        for i, doc in enumerate(docs):
+            if document_id:
+                chunk_id = f"{document_id}_{i}"
+                doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
+            else:
+                doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, doc))
+            
+            indexed_uuids.append(doc_id)
+            
+            self.local_docs.append({
+                "text": doc,
+                "source": source,
+                "tags": tags or [],
+                "document_id": document_id or doc_id,
+                "content_hash": content_hash,
+                "upload_timestamp": doc_upload_time,
+                "vector": embeddings[i].tolist() if (embeddings is not None and hasattr(embeddings[i], "tolist")) else (embeddings[i] if embeddings is not None else None)
+            })
+
+        # Save to local persistent storage
+        try:
+            os.makedirs("data", exist_ok=True)
+            import json
+            with open("data/local_docs.json", "w", encoding="utf-8") as f:
+                json.dump(self.local_docs, f, ensure_ascii=False, indent=2)
+            logger.debug(f"Saved {len(docs)} documents to local persistent database.")
+        except Exception as e:
+            logger.warning(f"Failed to persist local documents: {e}")
+
+        if not self._connected:
+            logger.warning(f"Weaviate not connected - saved document to local memory & file for: {source}")
+            return indexed_uuids
 
         def _batch_insert():
             with self.collection.batch.dynamic() as batch:
                 for i, doc in enumerate(docs):
-                    # Use document_id in UUID if provided for version tracking
-                    if document_id:
-                        chunk_id = f"{document_id}_{i}"
-                        doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id)
-                    else:
-                        doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, doc)
-                    
-                    indexed_uuids.append(str(doc_id))
-                    
-                    # Enhanced properties with lifecycle metadata
+                    doc_uuid = uuid.UUID(indexed_uuids[i])
                     properties = {
                         "text": doc, 
                         "tags": tags or [], 
                         "source": source,
                         "content_hash": content_hash,
                         "upload_timestamp": doc_upload_time,
-                        "document_id": document_id or str(doc_id),
+                        "document_id": document_id or indexed_uuids[i],
                     }
                     
                     batch.add_object(
                         properties=properties,
-                        vector=embeddings[i].tolist() if hasattr(embeddings[i], "tolist") else embeddings[i],
-                        uuid=doc_id
+                        vector=embeddings[i].tolist() if (embeddings is not None and hasattr(embeddings[i], "tolist")) else (embeddings[i] if embeddings is not None else None),
+                        uuid=doc_uuid
                     )
                 failed = self.collection.batch.failed_objects
                 if failed:
@@ -266,27 +300,62 @@ class WeaviateRetriever:
         """
         if not self._connected:
             logger.warning(f"Weaviate not connected - using local fallback search")
-            keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
+            import numpy as np
+            
+            t_start = time.time()
+            query_vector = None
+            try:
+                query_vector = self.embedding_model.encode(query)
+            except Exception as e:
+                logger.warning(f"Failed to encode query, falling back to simple keyword search: {e}")
+
+            t_embed = time.time()
             results = []
+            
             for doc in self.local_docs:
                 if source_filter and doc["source"] != source_filter:
                     continue
-                score = 0.0
+                
+                # Semantic Similarity (Cosine)
+                semantic_score = 0.0
+                if query_vector is not None and doc.get("vector") is not None:
+                    doc_vector = np.array(doc["vector"])
+                    norm_q = np.linalg.norm(query_vector)
+                    norm_d = np.linalg.norm(doc_vector)
+                    if norm_q > 0 and norm_d > 0:
+                        semantic_score = float(np.dot(query_vector, doc_vector) / (norm_q * norm_d))
+
+                # Keyword BM25-like matching
+                keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
+                keyword_score = 0.0
                 text_lower = doc["text"].lower()
                 for kw in keywords:
                     if kw in text_lower:
-                        score += 1.0
-                if score > 0 or not keywords:
-                    results.append({
-                        "text": doc["text"],
-                        "source": doc["source"],
-                        "tags": doc["tags"],
-                        "score": score / (len(keywords) if keywords else 1),
-                        "content_hash": "",
-                        "document_id": doc["document_id"]
-                    })
+                        keyword_score += 1.0
+                keyword_score = keyword_score / (len(keywords) if keywords else 1)
+
+                # Combine using dynamically calculated alpha
+                alpha = self._detect_alpha(query)
+                if doc.get("vector") is not None:
+                    # Hybrid score: weight vectors and keywords
+                    combined_score = alpha * semantic_score + (1.0 - alpha) * keyword_score
+                else:
+                    combined_score = keyword_score
+
+                results.append({
+                    "text": doc["text"],
+                    "source": doc["source"],
+                    "tags": doc["tags"],
+                    "score": combined_score,
+                    "content_hash": doc.get("content_hash", ""),
+                    "document_id": doc["document_id"]
+                })
+            
             results.sort(key=lambda x: x["score"], reverse=True)
-            return results[:top_k], 0.0, 0.0
+            t_search = time.time()
+            embed_latency_ms = (t_embed - t_start) * 1000
+            search_latency_ms = (t_search - t_embed) * 1000
+            return results[:top_k], embed_latency_ms, search_latency_ms
 
         t_start = time.time()
         query_vector = self.embedding_model.encode(query).tolist()
@@ -345,26 +414,53 @@ class WeaviateRetriever:
         """
         Indexes code chunks into Weaviate.
         """
-        for chunk in chunks:
-            self.local_code_chunks.append(chunk)
-            
-        if not self._connected or not self.client or not self.code_collection:
-            logger.warning("Weaviate not connected - skipping code indexing (stored locally).")
-            return [str(uuid.uuid4()) for _ in chunks]
-
         texts = [chunk["text"] for chunk in chunks]
-        embeddings = self.embedding_model.encode(texts)
-        doc_upload_time = time.time()
+        embeddings = None
+        try:
+            embeddings = self.embedding_model.encode(texts)
+        except Exception as e:
+            logger.warning(f"Could not generate embeddings for code chunks: {e}")
 
+        doc_upload_time = time.time()
         indexed_uuids = []
+
+        for i, chunk in enumerate(chunks):
+            # Deterministic UUID based on content path and text
+            chunk_id = f"{chunk['filepath']}_{chunk.get('symbol_name', '')}_{i}"
+            doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
+            indexed_uuids.append(doc_id)
+
+            local_chunk = {
+                "text": chunk["text"],
+                "symbol_name": chunk.get("symbol_name") or "",
+                "symbol_type": chunk.get("symbol_type") or "",
+                "filepath": chunk["filepath"],
+                "start_line": int(chunk.get("start_line", 1)),
+                "end_line": int(chunk.get("end_line", 1)),
+                "source": chunk.get("source") or "repo",
+                "upload_timestamp": doc_upload_time,
+                "vector": embeddings[i].tolist() if embeddings is not None else None
+            }
+            self.local_code_chunks.append(local_chunk)
+
+        # Save to local persistent storage
+        try:
+            os.makedirs("data", exist_ok=True)
+            import json
+            with open("data/local_code_chunks.json", "w", encoding="utf-8") as f:
+                json.dump(self.local_code_chunks, f, ensure_ascii=False, indent=2)
+            logger.debug(f"Saved {len(chunks)} code chunks to local persistent database.")
+        except Exception as e:
+            logger.warning(f"Failed to persist local code chunks: {e}")
+
+        if not self._connected or not self.client or not self.code_collection:
+            logger.warning("Weaviate not connected - saved code chunk locally.")
+            return indexed_uuids
+
         def _batch_insert():
             with self.code_collection.batch.dynamic() as batch:
                 for i, chunk in enumerate(chunks):
-                    # Deterministic UUID based on content path and text
-                    chunk_id = f"{chunk['filepath']}_{chunk.get('symbol_name', '')}_{i}"
-                    doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id)
-                    indexed_uuids.append(str(doc_id))
-
+                    doc_uuid = uuid.UUID(indexed_uuids[i])
                     properties = {
                         "text": chunk["text"],
                         "symbol_name": chunk.get("symbol_name") or "",
@@ -377,8 +473,8 @@ class WeaviateRetriever:
                     }
                     batch.add_object(
                         properties=properties,
-                        vector=embeddings[i].tolist(),
-                        uuid=doc_id
+                        vector=embeddings[i].tolist() if embeddings is not None else None,
+                        uuid=doc_uuid
                     )
         self.execute_with_retry(_batch_insert)
         return indexed_uuids
@@ -389,19 +485,44 @@ class WeaviateRetriever:
         """
         if not self._connected or not self.client or not self.code_collection:
             logger.warning("Weaviate not connected - using local fallback search for code chunks")
-            keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
+            import numpy as np
+
+            query_vector = None
+            try:
+                query_vector = self.embedding_model.encode(query)
+            except Exception as e:
+                logger.warning(f"Failed to encode query, falling back to simple keyword search: {e}")
+
             results = []
             for chunk in self.local_code_chunks:
-                score = 0.0
+                # Semantic Similarity (Cosine)
+                semantic_score = 0.0
+                if query_vector is not None and chunk.get("vector") is not None:
+                    doc_vector = np.array(chunk["vector"])
+                    norm_q = np.linalg.norm(query_vector)
+                    norm_d = np.linalg.norm(doc_vector)
+                    if norm_q > 0 and norm_d > 0:
+                        semantic_score = float(np.dot(query_vector, doc_vector) / (norm_q * norm_d))
+
+                # Keyword matching
+                keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
+                keyword_score = 0.0
                 text_lower = chunk["text"].lower()
                 for kw in keywords:
                     if kw in text_lower:
-                        score += 1.0
-                if score > 0 or not keywords:
-                    results.append({
-                        "chunk": chunk,
-                        "score": score
-                    })
+                        keyword_score += 1.0
+                keyword_score = keyword_score / (len(keywords) if keywords else 1)
+
+                if chunk.get("vector") is not None:
+                    combined_score = 0.5 * semantic_score + 0.5 * keyword_score
+                else:
+                    combined_score = keyword_score
+
+                results.append({
+                    "chunk": chunk,
+                    "score": combined_score
+                })
+
             results.sort(key=lambda x: x["score"], reverse=True)
             return [item["chunk"] for item in results[:limit]]
 

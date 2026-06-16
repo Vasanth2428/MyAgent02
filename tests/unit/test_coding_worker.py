@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from langchain_core.messages import AIMessage, ToolMessage
-from src.agents.coding_worker import coding_worker_node, tools_map
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage, SystemMessage
+from src.agents.coding_worker import coding_worker_node, tools_map, is_task_compatible, parse_malformed_tool_calls
+
 
 
 class TestCodingWorker(unittest.TestCase):
@@ -136,9 +137,12 @@ class TestCodingWorker(unittest.TestCase):
         with patch.dict(tools_map, {"modify_files": mock_modify}):
             res = coding_worker_node(state)
             mock_modify.invoke.assert_not_called()
+            # Handle both dict and Command responses
+            from langgraph.types import Command
+            update = res.update if isinstance(res, Command) else res
             # The agent gets the block observation and pauses, return worker_complete as False and waiting_for_approval as True
-            self.assertEqual(res["worker_complete"]["coding_worker"], False)
-            self.assertEqual(res["waiting_for_approval"], True)
+            self.assertEqual(update["worker_complete"]["coding_worker"], False)
+            self.assertEqual(update["waiting_for_approval"], True)
 
     @patch("src.agents.coding_worker.get_coding_model")
     def test_coding_worker_node_path_normalized_approval(self, mock_get_model):
@@ -217,8 +221,10 @@ class TestCodingWorker(unittest.TestCase):
             "messages": []
         }
         res = coding_worker_node(state)
-        self.assertEqual(res["worker_complete"]["coding_worker"], True)
-        self.assertIn("strictly restricted to writing frontend code using the React framework", res["worker_outputs"]["coding_worker"])
+        from langgraph.types import Command
+        update = res.update if isinstance(res, Command) else res
+        self.assertEqual(update["worker_complete"]["coding_worker"], True)
+        self.assertIn("strictly restricted to writing frontend code using the React framework", update["worker_outputs"]["coding_worker"])
 
     @patch("src.agents.coding_worker.get_validation_model")
     def test_coding_worker_node_incompatible_nodejs(self, mock_get_val_model):
@@ -235,9 +241,237 @@ class TestCodingWorker(unittest.TestCase):
             "messages": []
         }
         res = coding_worker_node(state)
+        from langgraph.types import Command
+        update = res.update if isinstance(res, Command) else res
+        self.assertEqual(update["worker_complete"]["coding_worker"], True)
+        self.assertIn("strictly restricted to writing frontend code using the React framework", update["worker_outputs"]["coding_worker"])
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_node_bypass_hitl(self, mock_get_model):
+        """Coding worker should execute the tool call directly without blocking and requesting approval when bypass_hitl is True."""
+        mock_tool_call = {
+            "name": "create_files",
+            "args": {"filepath": "bypass_test.py", "content": "print('bypass')"},
+            "id": "call_bypass"
+        }
+        
+        mock_response = MagicMock()
+        mock_response.tool_calls = [mock_tool_call]
+        mock_response.content = "Creating file."
+        
+        mock_response_stop = MagicMock()
+        mock_response_stop.tool_calls = []
+        mock_response_stop.content = "Finished creating file."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = [mock_response, mock_response_stop]
+        mock_get_model.return_value = mock_llm
+        
+        state = {
+            "current_task": "Create bypass file",
+            "scratchpad": "",
+            "messages": [],
+            "bypass_hitl": True
+        }
+        
+        mock_create = MagicMock()
+        mock_create.invoke = MagicMock(return_value="Success: Created file 'bypass_test.py'")
+        with patch.dict(tools_map, {"create_files": mock_create}):
+            res = coding_worker_node(state)
+            
+            # The agent should execute create_files directly, not block
+            mock_create.invoke.assert_called_once_with({"filepath": "bypass_test.py", "content": "print('bypass')"})
+            self.assertEqual(res["worker_complete"]["coding_worker"], True)
+            self.assertNotIn("waiting_for_approval", res)
+
+    @patch("src.agents.coding_worker.get_validation_model")
+    def test_coding_worker_accepts_repository_search_task(self, mock_get_val_model):
+        """is_task_compatible should accept repository search tasks."""
+        mock_response = MagicMock()
+        mock_response.content = '{"is_compatible": true, "explanation": ""}'
+        mock_val_llm = MagicMock()
+        mock_val_llm.invoke.return_value = mock_response
+        mock_get_val_model.return_value = mock_val_llm
+
+        is_compatible, explanation = is_task_compatible("Search for the login function in repository")
+        self.assertTrue(is_compatible)
+        self.assertEqual(explanation, "")
+
+    @patch("src.agents.coding_worker.get_validation_model")
+    def test_coding_worker_accepts_workspace_html_creation_task(self, mock_get_val_model):
+        """is_task_compatible should accept workspace HTML creation tasks."""
+        mock_response = MagicMock()
+        mock_response.content = '{"is_compatible": true, "explanation": ""}'
+        mock_val_llm = MagicMock()
+        mock_val_llm.invoke.return_value = mock_response
+        mock_get_val_model.return_value = mock_val_llm
+
+        is_compatible, explanation = is_task_compatible("Create a helper hello.html inside ./workspace")
+        self.assertTrue(is_compatible)
+        self.assertEqual(explanation, "")
+
+    def test_coding_worker_parses_malformed_groq_tool_call(self):
+        """parse_malformed_tool_calls should parse various forms of malformed JSON / action inputs."""
+        # Scenario A: JSON inside markdown code block
+        content_a = """
+Some text before the block.
+```json
+{
+  "name": "create_files",
+  "args": {"filepath": "test.py", "content": "print(1)"}
+}
+```
+"""
+        calls_a = parse_malformed_tool_calls(content_a)
+        self.assertEqual(len(calls_a), 1)
+        self.assertEqual(calls_a[0]["name"], "create_files")
+        self.assertEqual(calls_a[0]["args"]["filepath"], "test.py")
+        self.assertTrue("id" in calls_a[0])
+
+        # Scenario B: JSON without code blocks, with arguments instead of args
+        content_b = """
+{
+  "name": "modify_files",
+  "arguments": {"filepath": "test.py", "target_code": "a", "replacement_code": "b"}
+}
+"""
+        calls_b = parse_malformed_tool_calls(content_b)
+        self.assertEqual(len(calls_b), 1)
+        self.assertEqual(calls_b[0]["name"], "modify_files")
+        self.assertEqual(calls_b[0]["args"]["filepath"], "test.py")
+
+        # Scenario C: Action / Action Input style
+        content_c = """
+Thought: I need to list files.
+Action: list_files
+Action Input: {"directory": "."}
+"""
+        calls_c = parse_malformed_tool_calls(content_c)
+        self.assertEqual(len(calls_c), 1)
+        self.assertEqual(calls_c[0]["name"], "list_files")
+        self.assertEqual(calls_c[0]["args"]["directory"], ".")
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_blocks_create_files_without_approval(self, mock_get_model):
+        """Coding worker should block create_files if not approved, store it in pending approvals, and return waiting_for_approval."""
+        mock_tool_call = {
+            "name": "create_files",
+            "args": {"filepath": "new_file.py", "content": "print('hello')"},
+            "id": "call_create_123"
+        }
+        
+        mock_response = MagicMock()
+        mock_response.tool_calls = [mock_tool_call]
+        mock_response.content = "Creating file."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = mock_response
+        mock_get_model.return_value = mock_llm
+        
+        state = {
+            "current_task": "Create new file",
+            "scratchpad": "",
+            "messages": [],
+            "configurable": {"thread_id": "test_thread"}
+        }
+        
+        with patch("src.graph.supervisor.is_file_approved") as mock_approved:
+            mock_approved.return_value = False
+            res = coding_worker_node(state)
+            
+        from langgraph.types import Command
+        update = res.update if isinstance(res, Command) else res
+        
+        self.assertEqual(update["waiting_for_approval"], True)
+        self.assertEqual(update["approval_filepath"], "new_file.py")
+        self.assertEqual(update["approval_tool"], "create_files")
+        
+        # Verify stores tool_call_id
+        pending = update["pending_file_approvals"]
+        self.assertIn("new_file.py", pending)
+        self.assertEqual(pending["new_file.py"]["tool_call_id"], "call_create_123")
+        self.assertEqual(pending["new_file.py"]["tool"], "create_files")
+        self.assertEqual(pending["new_file.py"]["args"]["content"], "print('hello')")
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_resumes_after_approval_without_reexecuting_tool(self, mock_get_model):
+        """Coding worker should resume after approval using stored resume details, replacing the placeholder and not re-running the tool."""
+        # Create private message transcript with a placeholder ToolMessage
+        agent_messages = [
+            SystemMessage(content="system_prompt"),
+            HumanMessage(content="task"),
+            AIMessage(content="I will create the file.", tool_calls=[{"name": "create_files", "args": {"filepath": "res.py", "content": "1"}, "id": "call_res"}]),
+            ToolMessage(content="Approval required...", tool_call_id="call_res", name="create_files")
+        ]
+        
+        # When model is invoked next, it shouldn't ask for tool calls again; it should finish.
+        mock_response_stop = MagicMock()
+        mock_response_stop.tool_calls = []
+        mock_response_stop.content = "Finished task after resume."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = mock_response_stop
+        mock_get_model.return_value = mock_llm
+        
+        state = {
+            "current_task": "Create res.py",
+            "scratchpad": "",
+            "messages": [],
+            "coding_worker_messages": agent_messages,
+            "coding_worker_step": 1,
+            "coding_worker_tool_calls_count": 1,
+            "coding_worker_resume_tool_result": "Success: Created res.py",
+            "coding_worker_resume_tool_call_id": "call_res"
+        }
+        
+        mock_create = MagicMock()
+        with patch.dict(tools_map, {"create_files": mock_create}):
+            res = coding_worker_node(state)
+            
+            # create_files should NOT be executed again
+            mock_create.invoke.assert_not_called()
+            
+            self.assertEqual(res["worker_complete"]["coding_worker"], True)
+            self.assertEqual(res["worker_outputs"]["coding_worker"], "Finished task after resume.")
+            
+            # verify resume result was applied to the private transcript
+            invoked_messages = mock_llm.invoke.call_args[0][0]
+            # The tool message content should be updated to "Success: Created res.py"
+            self.assertEqual(invoked_messages[3].content, "Success: Created res.py")
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_clears_private_resume_state_after_completion(self, mock_get_model):
+        """Coding worker should clear private resume state from state dictionary after task is successfully completed."""
+        mock_response = MagicMock()
+        mock_response.tool_calls = []
+        mock_response.content = "Task finished cleanly."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = mock_response
+        mock_get_model.return_value = mock_llm
+        
+        state = {
+            "current_task": "Simple task",
+            "scratchpad": "",
+            "messages": [],
+            "coding_worker_messages": [HumanMessage(content="task")],
+            "coding_worker_step": 2,
+            "coding_worker_tool_calls_count": 2,
+            "coding_worker_resume_tool_result": "Result",
+            "coding_worker_resume_tool_call_id": "call_123"
+        }
+        
+        res = coding_worker_node(state)
+        
         self.assertEqual(res["worker_complete"]["coding_worker"], True)
-        self.assertIn("strictly restricted to writing frontend code using the React framework", res["worker_outputs"]["coding_worker"])
+        self.assertEqual(res["coding_worker_messages"], [])
+        self.assertEqual(res["coding_worker_step"], 0)
+        self.assertEqual(res["coding_worker_tool_calls_count"], 0)
+        self.assertIsNone(res["coding_worker_resume_tool_result"])
+        self.assertIsNone(res["coding_worker_resume_tool_call_id"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+

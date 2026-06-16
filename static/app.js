@@ -19,6 +19,10 @@ const stopBtn               = document.getElementById('stop-btn');
 const sessionTag            = document.getElementById('session-tag');
 const knowledgeCount        = document.getElementById('knowledge-count');
 const activeModeBadge       = document.getElementById('active-mode-badge');
+const hitlToggleWrapper     = document.getElementById('hitl-toggle-wrapper');
+const hitlBypassToggle      = document.getElementById('hitl-bypass-toggle');
+const hitlLabel             = document.getElementById('hitl-label');
+const autonomyLabel         = document.getElementById('autonomy-label');
 
 // Stats Panel
 const statQ         = document.getElementById('stat-q');
@@ -60,12 +64,15 @@ let contextLimit = parseInt(contextLimitSlider.value);
 let abortController = null;
 let isInParallelMode = false;
 let sessionOverflows = 0;
+let isApprovalPending = false;
 
 // ---- Explicit App State Model ----
 const AppState = {
     get sid() { return sid; },
     get contextLimit() { return contextLimit; },
     get isGenerating() { return abortController !== null; },
+    get isApprovalPending() { return isApprovalPending; },
+    get isInputLocked() { return this.isGenerating || this.isApprovalPending; },
     get abortController() { return abortController; },
     
     updateContextLimit(val) {
@@ -78,27 +85,84 @@ const AppState = {
     
     setGenerating(generating, controller = null) {
         abortController = controller;
-        btn.disabled = generating;
+        btn.disabled = this.isInputLocked;
         if (stopBtn) stopBtn.style.display = generating ? 'inline-block' : 'none';
         addLog(generating ? "System transitioned to state: GENERATING" : "System transitioned to state: IDLE", "STATE");
+    },
+
+    setApprovalPending(pending) {
+        isApprovalPending = pending;
+        if (input) input.disabled = this.isInputLocked;
+        if (btn) btn.disabled = this.isInputLocked;
+        addLog(pending ? "System transitioned to state: APPROVAL_PENDING" : "System transitioned to state: APPROVAL_RESOLVED", "STATE");
     }
 };
+
+// ---- Custom Dropdown Mode Selector ----
+const modeDropdownContainer = document.querySelector('.mode-dropdown-container');
+const modeDropdownBtn = document.getElementById('mode-dropdown-btn');
+const modeDropdownItems = document.querySelectorAll('.mode-dropdown-item');
+
+function updateHitlToggleVisibility(mode) {
+    if (!hitlToggleWrapper) return;
+    if (mode === 'agentic') {
+        hitlToggleWrapper.style.display = 'flex';
+        // Force reflow
+        hitlToggleWrapper.offsetHeight;
+        hitlToggleWrapper.style.opacity = '1';
+        hitlToggleWrapper.style.transform = 'translateX(0)';
+    } else {
+        hitlToggleWrapper.style.opacity = '0';
+        hitlToggleWrapper.style.transform = 'translateX(-10px)';
+        // Wait for transition to finish
+        setTimeout(() => {
+            const currentMode = document.querySelector('input[name="engine-mode"]:checked')?.value;
+            if (currentMode !== 'agentic') {
+                hitlToggleWrapper.style.display = 'none';
+            }
+        }, 250);
+    }
+}
+
+function updateToggleLabelStyles(bypass) {
+    if (!hitlLabel || !autonomyLabel) return;
+    if (bypass) {
+        hitlLabel.style.color = 'var(--text-secondary)';
+        autonomyLabel.style.color = 'var(--accent-indigo)';
+    } else {
+        hitlLabel.style.color = 'var(--accent-indigo)';
+        autonomyLabel.style.color = 'var(--text-secondary)';
+    }
+}
+
+function syncDropdownWithRadio() {
+    const checkedRadio = document.querySelector('input[name="engine-mode"]:checked');
+    if (checkedRadio && modeDropdownItems.length > 0) {
+        const modeVal = checkedRadio.value;
+        modeDropdownItems.forEach(item => {
+            if (item.dataset.value === modeVal) {
+                item.classList.add('active');
+            } else {
+                item.classList.remove('active');
+            }
+        });
+        if (activeModeBadge) {
+            activeModeBadge.textContent = modeVal === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : modeVal.replace('_', ' ').toUpperCase();
+        }
+        updateHitlToggleVisibility(modeVal);
+    }
+}
 
 // ---- Mode Selector Listeners ----
 document.querySelectorAll('input[name="engine-mode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
         if (e.target.checked) {
             const mode = e.target.value;
-            activeModeBadge.textContent = mode === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : mode.replace('_', ' ').toUpperCase();
             addLog(`Processing mode changed to ${mode === 'agentic' ? 'COOPERATIVE MULTI-AGENT' : mode.replace('_', ' ').toUpperCase()}`, "SYSTEM");
+            syncDropdownWithRadio();
         }
     });
 });
-
-// ---- Custom Dropdown Mode Selector ----
-const modeDropdownContainer = document.querySelector('.mode-dropdown-container');
-const modeDropdownBtn = document.getElementById('mode-dropdown-btn');
-const modeDropdownItems = document.querySelectorAll('.mode-dropdown-item');
 
 if (modeDropdownBtn && modeDropdownContainer) {
     modeDropdownBtn.addEventListener('click', (e) => {
@@ -123,11 +187,6 @@ if (modeDropdownBtn && modeDropdownContainer) {
                 targetRadio.checked = true;
                 targetRadio.dispatchEvent(new Event('change'));
             }
-
-            // Sync active visual class
-            modeDropdownItems.forEach(i => i.classList.remove('active'));
-            item.classList.add('active');
-
             modeDropdownContainer.classList.remove('open');
             modeDropdownBtn.setAttribute('aria-expanded', 'false');
         });
@@ -207,7 +266,7 @@ if (input) {
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
-            if (!AppState.isGenerating && input.value.trim()) {
+            if (!AppState.isInputLocked && input.value.trim()) {
                 form.dispatchEvent(new Event('submit', { cancelable: true }));
             }
         }
@@ -218,7 +277,7 @@ if (input) {
 document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        if (!AppState.isGenerating && input.value.trim()) {
+        if (!AppState.isInputLocked && input.value.trim()) {
             form.dispatchEvent(new Event('submit', { cancelable: true }));
         }
     }
@@ -439,6 +498,28 @@ function addOrUpdateStep(stepType, name, detail = '') {
                 }
             }
         });
+
+        // Update visual graph nodes in the tab-graph panel
+        const isParallelVisual = isInParallelMode && name !== 'aggregate_parallel_results_node' && name !== 'supervisor_node';
+        document.querySelectorAll('.agent-graph-viz .graph-node').forEach(node => {
+            const nodeName = node.id.replace('graph-node-', '');
+            const isNodeParallel = nodeName !== 'aggregate_parallel_results_node' && nodeName !== 'supervisor_node';
+            const shouldCompleteNode = !isParallelVisual || !isNodeParallel;
+            if (node.classList.contains('active') && shouldCompleteNode) {
+                node.classList.remove('active');
+                node.classList.add('completed');
+                const statusEl = node.querySelector('.node-status');
+                if (statusEl) statusEl.textContent = 'Completed';
+            }
+        });
+        
+        const nodeEl = document.getElementById('graph-node-' + name);
+        if (nodeEl) {
+            nodeEl.classList.remove('completed');
+            nodeEl.classList.add('active');
+            const statusEl = nodeEl.querySelector('.node-status');
+            if (statusEl) statusEl.textContent = 'Active';
+        }
         
         const friendlyNames = {
             'supervisor_node': 'Routing Supervisor [Cooperative Planner]',
@@ -446,6 +527,8 @@ function addOrUpdateStep(stepType, name, detail = '') {
             'web_worker_node': 'Web Search Specialist [Internet Queries]',
             'utility_worker_node': 'Utility Specialist [Computations & Logic]',
             'scraper_worker_node': 'Scraper Specialist [URL Extraction]',
+            'coding_worker_node': 'Code Specialist [Software Synthesis]',
+            'code_critic_worker_node': 'Code Critic Specialist [Vulnerability Audit]',
             'critic_worker_node': 'Critic Specialist [Fact-Check & Audit]',
             'report_worker_node': 'Report Specialist [Document Generation]',
             'synthesizer_node': 'Response Synthesizer [Final Fusion]',
@@ -519,6 +602,13 @@ function addOrUpdateStep(stepType, name, detail = '') {
 // ---- SSE Streaming Controller ----
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    if (AppState.isApprovalPending) {
+        showToast('Approve or reject the pending file operation before sending another message.', 'warning');
+        addLog('Submission blocked: approval decision is still pending.', 'WARNING');
+        return;
+    }
+
     const query = input.value.trim();
     if (!query) return;
 
@@ -541,6 +631,14 @@ form.addEventListener('submit', async (e) => {
 
     // Reset/Clear UI state for query run
     reconWindow.innerHTML = '';
+    
+    // Reset all visual graph nodes
+    document.querySelectorAll('.agent-graph-viz .graph-node').forEach(node => {
+        node.classList.remove('active', 'completed');
+        const statusEl = node.querySelector('.node-status');
+        if (statusEl) statusEl.textContent = 'Idle';
+    });
+
     inspectorWindow.innerHTML = `
         <div class="inspector-section">
             <div class="inspector-section-hdr">PROCESSING MONITOR (REAL TIME)</div>
@@ -634,6 +732,7 @@ form.addEventListener('submit', async (e) => {
     const bodyContainer = aiBubble.querySelector('.msg-body');
 
     try {
+        const bypassHitl = hitlBypassToggle ? hitlBypassToggle.checked : false;
         const response = await fetch(`${API_BASE}/query_stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -641,7 +740,8 @@ form.addEventListener('submit', async (e) => {
                 question: query, 
                 session_id: AppState.sid, 
                 mode: mode,
-                context_limit: AppState.contextLimit
+                context_limit: AppState.contextLimit,
+                bypass_hitl: bypassHitl
             }),
             signal: AppState.abortController.signal
         });
@@ -756,6 +856,7 @@ form.addEventListener('submit', async (e) => {
                 }
                 else if (data.event === "blocked_tool") {
                     // Show approval UI for blocked file operations
+                    AppState.setApprovalPending(true);
                     addLog("File operation blocked pending approval: " + data.filepath, "WARNING");
                     ensureAccordion();
                     
@@ -819,6 +920,9 @@ form.addEventListener('submit', async (e) => {
                     if (!accumulatedText) {
                         bodyContainer.innerHTML = `<span style="color: orange; font-style: italic;">⏳ Workflow paused — approve or reject the file operation above to continue.</span>`;
                     }
+                    AppState.setApprovalPending(true);
+                    if (input) input.disabled = true;
+                    if (btn) btn.disabled = true;
                 }
                 else if (data.event === "state_change") {
                     addLog(`State: ${data.state}`, "SYSTEM");
@@ -845,9 +949,10 @@ form.addEventListener('submit', async (e) => {
                      // Stream lines to overflow debugger terminal shell
                      const stepDiv = document.createElement('div');
                      stepDiv.className = 'overflow-step-line';
+                     stepDiv.textContent = data.text;
                      
                      // Style lines based on contents
-                     if (stepDiv.textContent = data.text) {
+                     if (data.text) {
                          if (data.text.includes("🚨")) {
                              stepDiv.className += ' step-alarm';
                          } else if (data.text.includes("Phase 1")) {
@@ -865,6 +970,13 @@ form.addEventListener('submit', async (e) => {
                      overflowLogWindow.scrollTop = overflowLogWindow.scrollHeight;
                  }
                  else if (data.event === "answer_chunk") {
+                     accumulatedText += data.text;
+                     updateStreamUI(false);
+                 }
+                 else if (data.event === "error") {
+                     throw new Error(data.message);
+                 }
+                 else if (data.event === "done") {
                      if (inlineThinkingAccordion) {
                          const elapsed = ((Date.now() - thinkingStart) / 1000).toFixed(1);
                          const statusSpan = inlineThinkingAccordion.querySelector('.thinking-status');
@@ -883,13 +995,6 @@ form.addEventListener('submit', async (e) => {
                          inlineThinkingAccordion = null;
                          inlineThinkingDetails = null;
                      }
-                     accumulatedText += data.text;
-                     updateStreamUI(false);
-                 }
-                 else if (data.event === "error") {
-                     throw new Error(data.message);
-                 }
-                 else if (data.event === "done") {
                      updateStreamUI(true);
                      const latency = Date.now() - startTime;
                      addLog(`Processing complete: ${latency}ms`, 'SUCCESS');
@@ -1017,6 +1122,7 @@ form.addEventListener('submit', async (e) => {
         // generating state — the buttons need to remain interactive.
         if (!bodyContainer.dataset.waitingForApproval) {
             AppState.setGenerating(false);
+            AppState.setApprovalPending(false);
         }
     }
 });
@@ -1034,6 +1140,7 @@ if (stopBtn) {
                 cursorBubble.innerHTML += "<br><span style='color: var(--accent-amber); font-size: 0.75rem; font-weight: bold;'>[PIPELINE ABORTED]</span>";
             }
             AppState.setGenerating(false);
+            AppState.setApprovalPending(false);
         }
     });
 }
@@ -1128,6 +1235,9 @@ window.closeTelemetryModal = function() {
 async function sendApproval(approved, filepath, tool,
                             capturedAccordion, capturedDetails,
                             capturedBodyContainer, capturedAiBubble, capturedMode) {
+    if (AppState.abortController) {
+        AppState.abortController.abort();
+    }
     try {
         const res = await fetch(API_BASE + '/approve_changes', {
             method: 'POST',
@@ -1144,7 +1254,9 @@ async function sendApproval(approved, filepath, tool,
                 capturedBodyContainer.dataset.waitingForApproval = '';
                 capturedBodyContainer.innerHTML = `<span style="color: var(--accent-amber); font-style: italic;">❌ File operation rejected. Workflow stopped.</span>`;
             }
-            AppState.setGenerating(false);
+            AppState.setApprovalPending(false);
+            if (input) input.disabled = false;
+            if (btn) btn.disabled = false;
             return;
         }
 
@@ -1201,6 +1313,7 @@ async function sendApproval(approved, filepath, tool,
 
                     if (evt.event === 'node_start') {
                         addLog('Resumed node: ' + evt.node, 'STATE');
+                        addOrUpdateStep("node", evt.node);
                     } else if (evt.event === 'thought') {
                         if (capturedDetails) {
                             const l = document.createElement('div');
@@ -1227,7 +1340,6 @@ async function sendApproval(approved, filepath, tool,
                         // Handle the approval packet from the new backend structure
                         const filepath = evt.approval_filepath || evt.filepath;
                         const tool = evt.approval_tool || evt.tool;
-                        const details = evt.pending_file_approvals || {};
                         
                         if (capturedDetails) {
                             addLog('Another file operation needs approval: ' + filepath, 'WARNING');
@@ -1252,6 +1364,12 @@ async function sendApproval(approved, filepath, tool,
                         if (capturedBodyContainer) {
                             capturedBodyContainer.dataset.waitingForApproval = 'true';
                             if (!resumeAccumulated) capturedBodyContainer.innerHTML = `<span style="color:orange;font-style:italic;">⏳ Workflow paused — approve or reject the file operation above to continue.</span>`;
+                        }
+                        AppState.setApprovalPending(true);
+                        if (input) input.disabled = true;
+                        if (btn) btn.disabled = true;
+                        if (resumeController) {
+                            resumeController.abort();
                         }
                     } else if (evt.event === 'blocked_tool') {
                         // Another approval needed — show buttons again inside captured details
@@ -1279,6 +1397,12 @@ async function sendApproval(approved, filepath, tool,
                             capturedBodyContainer.dataset.waitingForApproval = 'true';
                             if (!resumeAccumulated) capturedBodyContainer.innerHTML = `<span style="color:orange;font-style:italic;">⏳ Workflow paused — approve or reject the file operation above to continue.</span>`;
                         }
+                        AppState.setApprovalPending(true);
+                        if (input) input.disabled = true;
+                        if (btn) btn.disabled = true;
+                        if (resumeController) {
+                            resumeController.abort();
+                        }
                         return; // wait for next approval; do not call setGenerating(false)
                     } else if (evt.event === 'done') {
                         if (resumeAccumulated && capturedBodyContainer) {
@@ -1305,10 +1429,18 @@ async function sendApproval(approved, filepath, tool,
             addLog('Failed to open resume stream: ' + streamErr.message, 'ERROR');
         } finally {
             AppState.setGenerating(false);
+            if (!capturedBodyContainer || !capturedBodyContainer.dataset.waitingForApproval) {
+                AppState.setApprovalPending(false);
+                if (input) input.disabled = false;
+                if (btn) btn.disabled = false;
+            }
         }
     } catch (e) {
         addLog('Failed to send approval: ' + e.message, 'ERROR');
         AppState.setGenerating(false);
+        AppState.setApprovalPending(false);
+        if (input) input.disabled = false;
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -1441,16 +1573,42 @@ document.addEventListener('visibilitychange', () => {
         stopStatsPolling();
         addLog("Tab hidden. Suspending stats polling.", "SYSTEM");
     } else {
-        startStatsPolling();
+        if (hitlBypassToggle) {
+    const savedBypass = localStorage.getItem('hitl_bypass') === 'true';
+    hitlBypassToggle.checked = savedBypass;
+    updateToggleLabelStyles(savedBypass);
+    
+    hitlBypassToggle.addEventListener('change', (e) => {
+        const bypass = e.target.checked;
+        localStorage.setItem('hitl_bypass', bypass);
+        updateToggleLabelStyles(bypass);
+        addLog(`Agent mode adjusted to: ${bypass ? 'AUTONOMOUS (Bypass HITL)' : 'HITL (Manual Approval)'}`, "SYSTEM");
+        showToast(bypass ? "Agent autonomy enabled" : "HITL mode enabled", "info");
+    });
+}
+
+startStatsPolling();
         refreshGlobalStats();
         addLog("Tab visible. Resumed stats polling.", "SYSTEM");
     }
 });
 
-startStatsPolling();
-refreshGlobalStats();
-loadHistory();
-AppState.updateContextLimit(parseInt(contextLimitSlider.value));
+if (hitlBypassToggle) {
+    const savedBypass = localStorage.getItem('hitl_bypass') === 'true';
+    hitlBypassToggle.checked = savedBypass;
+    updateToggleLabelStyles(savedBypass);
+    
+    hitlBypassToggle.addEventListener('change', (e) => {
+        const bypass = e.target.checked;
+        localStorage.setItem('hitl_bypass', bypass);
+        updateToggleLabelStyles(bypass);
+        addLog(`Agent mode adjusted to: ${bypass ? 'AUTONOMOUS (Bypass HITL)' : 'HITL (Manual Approval)'}`, "SYSTEM");
+        showToast(bypass ? "Agent autonomy enabled" : "HITL mode enabled", "info");
+    });
+}
+
+
+
 
 // ---- HUD Panel Toggle ----
 const hudToggleBtn = document.getElementById('hud-toggle-btn');
@@ -1734,6 +1892,15 @@ const ConversationManager = (() => {
         if (statT) statT.textContent = '0ms';
         if (statM) statM.textContent = '0';
 
+        // Reset all visual graph nodes
+        document.querySelectorAll('.agent-graph-viz .graph-node').forEach(node => {
+            node.classList.remove('active', 'completed');
+            const statusEl = node.querySelector('.node-status');
+            if (statusEl) statusEl.textContent = 'Idle';
+        });
+
+        syncDropdownWithRadio();
+
         try {
             const res  = await fetch(`${API_BASE}/history/${newSid}`);
             const hist = await res.json();
@@ -1773,6 +1940,15 @@ const ConversationManager = (() => {
             if (statHits) statHits.textContent = '0';
             if (statT) statT.textContent = '0ms';
             if (statM) statM.textContent = '0';
+
+            // Reset all visual graph nodes
+            document.querySelectorAll('.agent-graph-viz .graph-node').forEach(node => {
+                node.classList.remove('active', 'completed');
+                const statusEl = node.querySelector('.node-status');
+                if (statusEl) statusEl.textContent = 'Idle';
+            });
+
+            syncDropdownWithRadio();
 
             await loadSessions();
             // Focus input
@@ -1892,6 +2068,7 @@ const ConversationManager = (() => {
     }
 
     // ---- init: ensure current session is registered ----
+    let initPromise = null;
     async function init() {
         // Register current session so it appears in the list
         try {
@@ -1904,9 +2081,23 @@ const ConversationManager = (() => {
         await loadSessions();
     }
 
-    init();
+    initPromise = init();
 
-    return { loadSessions, autoTitleFromFirstMessage };
+    return { loadSessions, autoTitleFromFirstMessage, initPromise };
 })();
 
 // Title auto-setting is handled directly inside the form submit listener.
+
+// ---- Initialization sequence ----
+startStatsPolling();
+refreshGlobalStats();
+syncDropdownWithRadio();
+if (ConversationManager && ConversationManager.initPromise) {
+    ConversationManager.initPromise.then(() => {
+        loadHistory();
+    });
+} else {
+    loadHistory();
+}
+AppState.updateContextLimit(parseInt(contextLimitSlider.value));
+

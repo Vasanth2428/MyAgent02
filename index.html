@@ -54,7 +54,7 @@
                 </div>
 
                 <!-- Center Mode Selector Custom Dropdown -->
-                <div class="header-center">
+                <div class="header-center" style="display: flex; align-items: center; gap: 16px;">
                     <div class="mode-dropdown-container">
                         <button type="button" id="mode-dropdown-btn" class="mode-dropdown-btn" aria-haspopup="listbox" aria-expanded="false">
                             <svg class="model-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -81,6 +81,16 @@
                                 <div class="mode-item-desc">Supervisor-orchestrated planning & routing</div>
                             </div>
                         </div>
+                    </div>
+                    
+                    <!-- HITL vs Agent Decides Switch -->
+                    <div id="hitl-toggle-wrapper" class="hitl-toggle-wrapper" style="display: none; align-items: center; gap: 8px; background: var(--bg-surface); border: 1px solid var(--border-color); padding: 0.35rem 0.85rem; border-radius: var(--radius-pill); font-size: 0.72rem; font-weight: 600; color: var(--text-primary); transition: all var(--transition-normal); opacity: 0; transform: translateX(-10px);">
+                        <span id="hitl-label" style="color: var(--accent-indigo); transition: color var(--transition-fast);">HITL Mode</span>
+                        <label class="hud-switch" style="position: relative; display: inline-block; width: 34px; height: 18px; margin: 0 4px; cursor: pointer;">
+                            <input type="checkbox" id="hitl-bypass-toggle" style="opacity: 0; width: 0; height: 0; position: absolute;">
+                            <span class="hud-slider"></span>
+                        </label>
+                        <span id="autonomy-label" style="color: var(--text-secondary); transition: color var(--transition-fast);">Autonomous</span>
                     </div>
 
                     <!-- Hidden inputs to maintain compatibility with app.js -->

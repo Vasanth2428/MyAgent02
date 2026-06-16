@@ -6,6 +6,10 @@ logger = logging.getLogger("RAG.CodeParser")
 # Language module mapping
 _LANGUAGE_MODULES = {
     "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    "jsx": ("tree_sitter_typescript", "language_tsx"),
 }
 
 
@@ -35,9 +39,9 @@ def _parse_with_tree_sitter(content: bytes, filepath: str, language: str = "pyth
     imports: List[Dict[str, Any]] = []
     calls: List[Dict[str, Any]] = []
     
-    _extract_symbols(tree.root_node, symbols, filepath, content)
-    _extract_imports(tree.root_node, imports, filepath, content)
-    _extract_calls(tree.root_node, calls, filepath, content)
+    _extract_symbols(tree.root_node, symbols, filepath, content, language)
+    _extract_imports(tree.root_node, imports, filepath, content, language)
+    _extract_calls(tree.root_node, calls, filepath, content, language)
     
     return {
         "symbols": symbols,
@@ -48,67 +52,129 @@ def _parse_with_tree_sitter(content: bytes, filepath: str, language: str = "pyth
     }
 
 
-def _extract_symbols(node, symbols: List[Dict[str, Any]], filepath: str, content: bytes) -> None:
+def _extract_symbols(node, symbols: List[Dict[str, Any]], filepath: str, content: bytes, language: str = "python") -> None:
     """Extract class and function definitions from tree-sitter node."""
     
     source = content.decode("utf-8", errors="replace")
     
-    if node.type == "class_definition":
-        name_node = node.child_by_field_name("name")
-        class_name = name_node.text.decode("utf-8") if name_node else "Unknown"
-        
-        body_node = node.child_by_field_name("body")
-        start_line = node.start_point[0] + 1
-        end_line = node.end_point[0] + 1
-        
-        methods = _extract_methods(body_node, source) if body_node else []
-        docstring = _extract_docstring(node, source)
-        
-        bases = _extract_bases(node)
-        
-        symbols.append({
-            "type": "class",
-            "name": class_name,
-            "filepath": filepath,
-            "start_line": start_line,
-            "end_line": end_line,
-            "docstring": docstring,
-            "bases": bases,
-            "methods": methods,
-        })
-        
-    elif node.type in ("function_definition", "async_function_definition"):
-        name_node = node.child_by_field_name("name")
-        func_name = name_node.text.decode("utf-8") if name_node else "Unknown"
-        
-        start_line = node.start_point[0] + 1
-        end_line = node.end_point[0] + 1
-        
-        args_node = node.child_by_field_name("parameters")
-        arguments = _extract_arguments(args_node) if args_node else []
-        
-        returns_node = node.child_by_field_name("return_type")
-        return_type = _extract_type_annotation(returns_node, content) if returns_node else ""
-        
-        docstring = _extract_docstring(node, source)
-        
-        parent_class = _find_parent_class(node)
-        symbol_type = "method" if parent_class else "function"
-        
-        symbols.append({
-            "type": symbol_type,
-            "name": func_name,
-            "filepath": filepath,
-            "parent_class": parent_class,
-            "start_line": start_line,
-            "end_line": end_line,
-            "docstring": docstring,
-            "arguments": arguments,
-            "return_type": return_type,
-        })
+    # JavaScript/TypeScript/JSX/TSX node types
+    if language in ("javascript", "jsx", "typescript", "tsx"):
+        if node.type == "class_declaration":
+            name_node = node.child_by_field_name("name")
+            class_name = name_node.text.decode("utf-8") if name_node else "Unknown"
+            
+            body_node = node.child_by_field_name("body")
+            start_line = node.start_point[0] + 1
+            end_line = node.end_point[0] + 1
+            
+            methods = _extract_js_methods(body_node, source) if body_node else []
+            
+            symbols.append({
+                "type": "class",
+                "name": class_name,
+                "filepath": filepath,
+                "start_line": start_line,
+                "end_line": end_line,
+                "docstring": "",
+                "bases": [],
+                "methods": methods,
+            })
+            
+        elif node.type in ("function_declaration", "method_definition", "arrow_function", "function_expression"):
+            name = ""
+            
+            # For method_definition, check if it's a class method or standalone
+            if node.type == "method_definition":
+                name_node = node.child_by_field_name("name")
+                name = name_node.text.decode("utf-8") if name_node else ""
+                # Skip if this is a constructor - it will be captured under class
+                if name == "constructor":
+                    return
+            else:
+                name_node = node.child_by_field_name("name")
+                name = name_node.text.decode("utf-8") if name_node else "anonymous"
+            
+            if not name:
+                return
+                
+            start_line = node.start_point[0] + 1
+            end_line = node.end_point[0] + 1
+            
+            args_node = node.child_by_field_name("parameters")
+            arguments = _extract_js_arguments(args_node) if args_node else []
+            
+            parent_class = _find_js_parent_class(node)
+            symbol_type = "method" if parent_class else "function"
+            
+            symbols.append({
+                "type": symbol_type,
+                "name": name,
+                "filepath": filepath,
+                "parent_class": parent_class,
+                "start_line": start_line,
+                "end_line": end_line,
+                "docstring": "",
+                "arguments": arguments,
+                "return_type": "",
+            })
+    else:
+        # Python node types (default behavior)
+        if node.type == "class_definition":
+            name_node = node.child_by_field_name("name")
+            class_name = name_node.text.decode("utf-8") if name_node else "Unknown"
+            
+            body_node = node.child_by_field_name("body")
+            start_line = node.start_point[0] + 1
+            end_line = node.end_point[0] + 1
+            
+            methods = _extract_methods(body_node, source) if body_node else []
+            docstring = _extract_docstring(node, source)
+            
+            bases = _extract_bases(node)
+            
+            symbols.append({
+                "type": "class",
+                "name": class_name,
+                "filepath": filepath,
+                "start_line": start_line,
+                "end_line": end_line,
+                "docstring": docstring,
+                "bases": bases,
+                "methods": methods,
+            })
+            
+        elif node.type in ("function_definition", "async_function_definition"):
+            name_node = node.child_by_field_name("name")
+            func_name = name_node.text.decode("utf-8") if name_node else "Unknown"
+            
+            start_line = node.start_point[0] + 1
+            end_line = node.end_point[0] + 1
+            
+            args_node = node.child_by_field_name("parameters")
+            arguments = _extract_arguments(args_node) if args_node else []
+            
+            returns_node = node.child_by_field_name("return_type")
+            return_type = _extract_type_annotation(returns_node, content) if returns_node else ""
+            
+            docstring = _extract_docstring(node, source)
+            
+            parent_class = _find_parent_class(node)
+            symbol_type = "method" if parent_class else "function"
+            
+            symbols.append({
+                "type": symbol_type,
+                "name": func_name,
+                "filepath": filepath,
+                "parent_class": parent_class,
+                "start_line": start_line,
+                "end_line": end_line,
+                "docstring": docstring,
+                "arguments": arguments,
+                "return_type": return_type,
+            })
         
     for child in node.children:
-        _extract_symbols(child, symbols, filepath, content)
+        _extract_symbols(child, symbols, filepath, content, language)
 
 
 def _extract_methods(body_node, source: str) -> List[str]:
@@ -185,7 +251,7 @@ def _extract_docstring(node, source: str) -> str:
 
 
 def _find_parent_class(node) -> Optional[str]:
-    """Find the parent class name by walking up the tree."""
+    """Find the parent class name by walking up the tree for Python."""
     
     parent = node.parent
     while parent:
@@ -196,53 +262,149 @@ def _find_parent_class(node) -> Optional[str]:
     return None
 
 
-def _extract_imports(node, imports: List[Dict[str, Any]], filepath: str, content: bytes) -> None:
+def _find_js_parent_class(node) -> Optional[str]:
+    """Find the parent class name by walking up the tree for JavaScript/TypeScript."""
+    
+    parent = node.parent
+    while parent:
+        if parent.type == "class_declaration":
+            name_node = parent.child_by_field_name("name")
+            return name_node.text.decode("utf-8") if name_node else None
+        parent = parent.parent
+    return None
+
+
+def _extract_js_methods(body_node, source: str) -> List[str]:
+    """Extract method names from a JavaScript class body."""
+    methods = []
+    for child in body_node.children:
+        if child.type == "method_definition":
+            name_node = child.child_by_field_name("name")
+            if name_node:
+                name = name_node.text.decode("utf-8")
+                if name != "constructor":
+                    methods.append(name)
+    return methods
+
+
+def _extract_js_arguments(args_node) -> List[Dict[str, Any]]:
+    """Extract function arguments for JavaScript/TypeScript."""
+    arguments = []
+    
+    for child in args_node.children:
+        if child.type == "identifier" or child.type == "formal_parameters":
+            # Handle regular parameters
+            if child.type == "identifier":
+                name = child.text.decode("utf-8") if child.text else ""
+                if name:
+                    arguments.append({"name": name, "type": ""})
+        elif child.type == "comment":
+            continue
+                
+    return arguments
+
+
+def _extract_imports(node, imports: List[Dict[str, Any]], filepath: str, content: bytes, language: str = "python") -> None:
     """Extract import statements from tree-sitter node."""
     
-    if node.type == "import_statement":
-        import_nodes = []
-        for child in node.children:
-            if child.type == "dotted_name":
-                names = [n.text.decode("utf-8") for n in child.children if n.type not in (",",)]
-                if names:
-                    import_nodes.append(names)
-            elif child.type == "identifier":
-                import_nodes.append([child.text.decode("utf-8")])
-        
-        for name_list in import_nodes:
-            module_name = ".".join(name_list)
-            imports.append({
-                "type": "import",
-                "name": module_name,
-                "asname": None,
-                "line": node.start_point[0] + 1,
-                "filepath": filepath,
-            })
+    if language in ("javascript", "jsx", "typescript", "tsx"):
+        # JavaScript/TypeScript import: import ... from 'module'
+        if node.type == "import_statement":
+            source_node = None
+            import_clause = None
             
-    elif node.type == "import_from_statement":
-        dotted_names = []
-        for child in node.children:
-            if child.type == "dotted_name":
-                names = [n.text.decode("utf-8") for n in child.children if n.type not in (",",)]
-                dotted_names.append(names[0] if names else "")
-        
-        module_name = dotted_names[0] if len(dotted_names) > 0 else ""
-        
-        for name in dotted_names[1:]:
-            imports.append({
-                "type": "import_from",
-                "module": module_name,
-                "name": name,
-                "asname": None,
-                "line": node.start_point[0] + 1,
-                "filepath": filepath,
-            })
+            for child in node.children:
+                if child.type == "string":
+                    source_node = child
+                elif child.type == "import_clause":
+                    import_clause = child
             
+            if import_clause:
+                for child in import_clause.children:
+                    if child.type == "identifier":
+                        name = child.text.decode("utf-8") if child.text else ""
+                        imports.append({
+                            "type": "import",
+                            "name": name,
+                            "module": source_node.text.decode("utf-8").strip("'\"") if source_node else "",
+                            "line": node.start_point[0] + 1,
+                            "filepath": filepath,
+                        })
+                    elif child.type == "named_imports":
+                        for named in child.children:
+                            if named.type == "import_specifier":
+                                name_node = named.child_by_field_name("name")
+                                if name_node:
+                                    imports.append({
+                                        "type": "import",
+                                        "name": name_node.text.decode("utf-8"),
+                                        "module": source_node.text.decode("utf-8").strip("'\"") if source_node else "",
+                                        "line": node.start_point[0] + 1,
+                                        "filepath": filepath,
+                                    })
+        
+        # JavaScript require() calls
+        elif node.type == "call":
+            func_node = node.child_by_field_name("function")
+            if func_node and func_node.type == "identifier" and func_node.text.decode("utf-8") == "require":
+                args = node.child_by_field_name("arguments")
+                if args and args.children:
+                    for arg in args.children:
+                        if arg.type == "string":
+                            module = arg.text.decode("utf-8").strip("'\"")
+                            imports.append({
+                                "type": "require",
+                                "name": module,
+                                "module": module,
+                                "line": node.start_point[0] + 1,
+                                "filepath": filepath,
+                            })
+    else:
+        # Python imports (default behavior)
+        if node.type == "import_statement":
+            import_nodes = []
+            for child in node.children:
+                if child.type == "dotted_name":
+                    names = [n.text.decode("utf-8") for n in child.children if n.type not in (",",)]
+                    if names:
+                        import_nodes.append(names)
+                elif child.type == "identifier":
+                    import_nodes.append([child.text.decode("utf-8")])
+            
+            for name_list in import_nodes:
+                module_name = ".".join(name_list)
+                imports.append({
+                    "type": "import",
+                    "name": module_name,
+                    "asname": None,
+                    "line": node.start_point[0] + 1,
+                    "filepath": filepath,
+                })
+                
+        elif node.type == "import_from_statement":
+            dotted_names = []
+            for child in node.children:
+                if child.type == "dotted_name":
+                    names = [n.text.decode("utf-8") for n in child.children if n.type not in (",",)]
+                    dotted_names.append(names[0] if names else "")
+            
+            module_name = dotted_names[0] if len(dotted_names) > 0 else ""
+            
+            for name in dotted_names[1:]:
+                imports.append({
+                    "type": "import_from",
+                    "module": module_name,
+                    "name": name,
+                    "asname": None,
+                    "line": node.start_point[0] + 1,
+                    "filepath": filepath,
+                })
+        
     for child in node.children:
-        _extract_imports(child, imports, filepath, content)
+        _extract_imports(child, imports, filepath, content, language)
 
 
-def _extract_calls(node, calls: List[Dict[str, Any]], filepath: str, content: bytes) -> None:
+def _extract_calls(node, calls: List[Dict[str, Any]], filepath: str, content: bytes, language: str = "python") -> None:
     """Extract function call expressions from tree-sitter node."""
     
     if node.type == "call":
@@ -252,8 +414,16 @@ def _extract_calls(node, calls: List[Dict[str, Any]], filepath: str, content: by
         if func_node:
             if func_node.type == "identifier":
                 call_name = func_node.text.decode("utf-8")
+            elif func_node.type == "member_expression":
+                # Handle method calls like obj.method in JS
+                obj_node = func_node.child_by_field_name("object")
+                prop_node = func_node.child_by_field_name("property")
+                obj_name = obj_node.text.decode("utf-8") if obj_node else ""
+                prop_name = prop_node.text.decode("utf-8") if prop_node else ""
+                if obj_name and prop_name:
+                    call_name = f"{obj_name}.{prop_name}"
             elif func_node.type == "attribute":
-                # Handle method calls like obj.method()
+                # Handle method calls like obj.method() in Python
                 obj_node = func_node.child_by_field_name("object")
                 attr_node = func_node.child_by_field_name("attribute")
                 obj_name = obj_node.text.decode("utf-8") if obj_node else ""
@@ -269,7 +439,7 @@ def _extract_calls(node, calls: List[Dict[str, Any]], filepath: str, content: by
             })
             
     for child in node.children:
-        _extract_calls(child, calls, filepath, content)
+        _extract_calls(child, calls, filepath, content, language)
 
 
 class ParserInitializationException(Exception):

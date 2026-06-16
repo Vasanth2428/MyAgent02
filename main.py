@@ -11,6 +11,7 @@ This is the main entry point for the RAG system. It starts a web server with end
 
 import os
 import io
+import json
 import logging
 import traceback
 import psutil
@@ -19,7 +20,6 @@ import sys
 import sentence_transformers
 import transformers
 
-import sys
 if sys.platform.startswith("win"):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -42,6 +42,30 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from pypdf import PdfReader
 from dotenv import load_dotenv
+
+def _serialize_event(event):
+    """
+    Serialize an event dict to JSON, handling non-serializable LangChain message objects.
+    AIMessage, HumanMessage, ToolMessage, etc. are converted to their content string.
+    """
+    def _convert(value):
+        if isinstance(value, dict):
+            return {k: _convert(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_convert(v) for v in value]
+        # Handle LangChain BaseMessage subclasses (AIMessage, HumanMessage, etc.)
+        if hasattr(value, "content"):
+            return str(value.content)
+        # Leave primitives as-is
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        return str(value)
+    
+    try:
+        return json.dumps(_convert(event))
+    except Exception:
+        # Fallback: try to convert the entire event
+        return json.dumps(_convert(event))
 
 # Load environment variables from config directory
 load_dotenv(dotenv_path="config/.env")
@@ -176,6 +200,7 @@ class QueryRequest(BaseModel):
     mode: Literal["context_engine", "normal", "agentic"] = "context_engine"
     source_filter: Optional[str] = None
     context_limit: Optional[int] = None
+    bypass_hitl: bool = False
 
 
 class CreateSessionRequest(BaseModel):
@@ -213,22 +238,16 @@ async def query_rag(request: QueryRequest):
     """
     if not rag:
         raise HTTPException(status_code=500, detail="Engine not ready")
-    try:
-        logger.info(f"Query from session {request.session_id}: {request.question[:50]}...")
-        # Keep session's updated_at fresh
-        rag.persistent_memory.touch_session(request.session_id)
-        result = await rag.ask_async(
-            request.question,
-            session_id=request.session_id,
-            mode=request.mode,
-            source_filter=request.source_filter,
-            context_limit=request.context_limit
-        )
-        return result
-    except Exception as e:
-        error_details = traceback.format_exc()
-        logger.error(f"Error processing query: {e}\n{error_details}")
-        raise HTTPException(status_code=500, detail=f"Engine Error: {str(e)}\n\nTRACEBACK:\n{error_details}")
+
+    return await rag.ask_async(
+        request.question,
+        session_id=request.session_id,
+        mode=request.mode,
+        source_filter=request.source_filter,
+        top_k=5,
+        context_limit=request.context_limit,
+        bypass_hitl=request.bypass_hitl
+    )
 
 
 @app.post("/query_stream")
@@ -241,7 +260,6 @@ async def query_rag_stream(request: QueryRequest):
         raise HTTPException(status_code=500, detail="Engine not ready")
     
     async def event_generator():
-        import json
         try:
             logger.info(f"Stream Query from session {request.session_id}: {request.question[:50]}...")
             async for event in rag.ask_stream_async(
@@ -249,14 +267,15 @@ async def query_rag_stream(request: QueryRequest):
                 session_id=request.session_id,
                 mode=request.mode,
                 source_filter=request.source_filter,
-                context_limit=request.context_limit
+                context_limit=request.context_limit,
+                bypass_hitl=request.bypass_hitl
             ):
-                yield f"data: {json.dumps(event)}\n\n"
+                yield f"data: {_serialize_event(event)}\n\n"
         except asyncio.CancelledError:
             logger.warning(f"Client disconnected from query stream for session {request.session_id}.")
         except Exception as e:
             logger.error(f"Stream generation error: {e}")
-            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {_serialize_event({'event': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -416,13 +435,23 @@ async def approve_changes(request: ApprovalRequest):
             await rag.multi_agent_graph.aupdate_state(config, {
                 "scratchpad": f"\n- [SYSTEM HITL]: User approved modifications. Action result: {result}",
                 "waiting_for_approval": False,
-                "pending_file_approvals": {}
+                "pending_file_approvals": {},
+                "approval_decision": "approved",
+                "next_agent": "supervisor",
+                "current_task": "Resume after approved file operation.",
+                "coding_worker_resume_tool_result": result,
+                "coding_worker_resume_tool_call_id": pending.get("tool_call_id")
             })
         else:
             rag.multi_agent_graph.update_state(config, {
                 "scratchpad": f"\n- [SYSTEM HITL]: User approved modifications. Action result: {result}",
                 "waiting_for_approval": False,
-                "pending_file_approvals": {}
+                "pending_file_approvals": {},
+                "approval_decision": "approved",
+                "next_agent": "supervisor",
+                "current_task": "Resume after approved file operation.",
+                "coding_worker_resume_tool_result": result,
+                "coding_worker_resume_tool_call_id": pending.get("tool_call_id")
             })
         
         return {"status": "approved", "result": result, "message": "Tool executed successfully"}
@@ -433,13 +462,23 @@ async def approve_changes(request: ApprovalRequest):
                 await rag.multi_agent_graph.aupdate_state(config, {
                     "waiting_for_approval": False,
                     "pending_file_approvals": {},
-                    "worker_outputs": {"coding_worker": "User rejected file changes."}
+                    "worker_outputs": {"coding_worker": "User rejected file changes."},
+                    "approval_decision": "rejected",
+                    "next_agent": "supervisor",
+                    "current_task": "User rejected file changes; continue without applying them.",
+                    "coding_worker_resume_tool_result": "Error: User rejected the file modifications.",
+                    "coding_worker_resume_tool_call_id": pending.get("tool_call_id")
                 })
             else:
                 rag.multi_agent_graph.update_state(config, {
                     "waiting_for_approval": False,
                     "pending_file_approvals": {},
-                    "worker_outputs": {"coding_worker": "User rejected file changes."}
+                    "worker_outputs": {"coding_worker": "User rejected file changes."},
+                    "approval_decision": "rejected",
+                    "next_agent": "supervisor",
+                    "current_task": "User rejected file changes; continue without applying them.",
+                    "coding_worker_resume_tool_result": "Error: User rejected the file modifications.",
+                    "coding_worker_resume_tool_call_id": pending.get("tool_call_id")
                 })
         except Exception:
             pass
@@ -459,14 +498,13 @@ async def resume_stream(session_id: str):
     from src.graph.workflow import get_graph_config
 
     async def event_generator():
-        import json
         config = get_graph_config(session_id)
         try:
             logger.info(f"Resuming workflow stream for session {session_id}")
             if hasattr(rag.multi_agent_graph, "astream"):
                 async for event in rag.multi_agent_graph.astream(None, config=config):
                     for node_name, state_delta in event.items():
-                        yield f"data: {json.dumps({'event': 'node_start', 'node': node_name})}\n\n"
+                        yield f"data: {_serialize_event({'event': 'node_start', 'node': node_name})}\n\n"
 
                         worker_type = state_delta.get("worker_type", "") or node_name.replace("_node", "")
                         response = ""
@@ -476,22 +514,22 @@ async def resume_stream(session_id: str):
                             response = state_delta["messages"][-1].content
 
                         if response:
-                            yield f"data: {json.dumps({'event': 'thought', 'text': f'{worker_type}: {response[:120]}'})}\n\n"
-                            yield f"data: {json.dumps({'event': 'observation', 'output': response})}\n\n"
+                            yield f"data: {_serialize_event({'event': 'thought', 'text': f'{worker_type}: {response[:120]}'})}\n\n"
+                            yield f"data: {_serialize_event({'event': 'observation', 'output': response})}\n\n"
 
                         if state_delta.get("waiting_for_approval"):
                             approval_filepath = state_delta.get("approval_filepath", "")
                             approval_tool = state_delta.get("approval_tool", "")
-                            yield f"data: {json.dumps({'event': 'blocked_tool', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
-                            yield f"data: {json.dumps({'event': 'waiting_for_approval', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
+                            yield f"data: {_serialize_event({'event': 'blocked_tool', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
+                            yield f"data: {_serialize_event({'event': 'waiting_for_approval', 'filepath': approval_filepath, 'tool': approval_tool})}\n\n"
                             return
 
                         if "final_answer" in state_delta and state_delta["final_answer"]:
                             answer = state_delta["final_answer"]
                             for chunk in answer.split(" "):
-                                yield f"data: {json.dumps({'event': 'answer_chunk', 'text': chunk + ' '})}\n\n"
+                                yield f"data: {_serialize_event({'event': 'answer_chunk', 'text': chunk + ' '})}\n\n"
 
-                yield f"data: {json.dumps({'event': 'done', 'stats': {}})}\n\n"
+                yield f"data: {_serialize_event({'event': 'done', 'stats': {}})}\n\n"
                 
                 # Check if workflow is waiting for approval after graph completes
                 try:
@@ -511,14 +549,14 @@ async def resume_stream(session_id: str):
                                 "approval_tool": approval_tool,
                                 "text": "\n\n⚠️ **Action Required:** This modification requires security validation. Please approve or reject below."
                             }
-                            yield f"data: {json.dumps(approval_packet)}\n\n"
+                            yield f"data: {_serialize_event(approval_packet)}\n\n"
                 except Exception as state_err:
                     logger.warning(f"Failed to get state after stream: {state_err}")
         except asyncio.CancelledError:
             logger.warning(f"Client disconnected from resume stream for session {session_id}.")
         except Exception as e:
             logger.error(f"Resume stream error: {e}")
-            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {_serialize_event({'event': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

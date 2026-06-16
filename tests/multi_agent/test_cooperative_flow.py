@@ -149,8 +149,12 @@ def test_supervisor_detects_human_approval():
             HumanMessage(content="Yes, please approve and apply it.")
         ],
         "plan": ["Write code"],
-        "scratchpad": "Direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval.",
-        "steps_remaining": 10
+        "scratchpad": "",
+        "scratchpad_references": [],
+        "steps_remaining": 10,
+        "waiting_for_approval": True,
+        "pending_file_approvals": {"workspace/helper.py": {"approved": False}},
+        "approval_filepath": "",
     }
     
     from src.graph.supervisor import SupervisorDecision
@@ -160,14 +164,19 @@ def test_supervisor_detects_human_approval():
         current_task="Create helper.py"
     )
     
-    with patch("src.graph.supervisor.get_routing_model") as mock_get_model:
+    with patch("src.graph.supervisor.get_routing_model") as mock_get_model, \
+         patch("src.agents.coding_worker.execute_pending_approval", return_value="Applied successfully"), \
+         patch("src.agents.coding_worker.clear_pending_approval"), \
+         patch("src.tools.coding_tools._get_absolute_path", side_effect=lambda p: p):
         mock_model = Mock()
         mock_model.invoke.return_value = mock_llm_response
         mock_get_model.return_value = mock_model
         
         result = supervisor_node(state)
         
-        assert "[SYSTEM HITL]: User approved modifications" in result["scratchpad"]
+        # HITL messages are now written to scratchpad_references, not scratchpad
+        refs = result.get("scratchpad_references", [])
+        assert any("[SYSTEM HITL]: User approved modifications" in r for r in refs)
 
 
 def test_supervisor_detects_human_rejection():
@@ -179,10 +188,12 @@ def test_supervisor_detects_human_rejection():
             HumanMessage(content="No, cancel it.")
         ],
         "plan": ["Write code"],
-        "scratchpad": "Direct execution of 'create_files' for 'workspace/helper.py' is blocked pending user approval.",
+        "scratchpad": "",
+        "scratchpad_references": [],
         "steps_remaining": 10,
         "waiting_for_approval": True,
-        "pending_file_approvals": {"workspace/helper.py": {"approved": False}}
+        "pending_file_approvals": {"workspace/helper.py": {"approved": False}},
+        "approval_filepath": "",
     }
     
     from src.graph.supervisor import SupervisorDecision
@@ -192,14 +203,17 @@ def test_supervisor_detects_human_rejection():
         current_task="Create helper.py"
     )
     
-    with patch("src.graph.supervisor.get_routing_model") as mock_get_model:
+    with patch("src.graph.supervisor.get_routing_model") as mock_get_model, \
+         patch("src.agents.coding_worker.clear_pending_approval"):
         mock_model = Mock()
         mock_model.invoke.return_value = mock_llm_response
         mock_get_model.return_value = mock_model
         
         result = supervisor_node(state)
         
-        assert "[SYSTEM HITL]: User rejected the proposed file modifications" in result["scratchpad"]
+        # HITL messages are now written to scratchpad_references, not scratchpad
+        refs = result.get("scratchpad_references", [])
+        assert any("[SYSTEM HITL]: User rejected the proposed file modifications" in r for r in refs)
         assert result.get("waiting_for_approval") == False
         assert result.get("pending_file_approvals") == {}
 

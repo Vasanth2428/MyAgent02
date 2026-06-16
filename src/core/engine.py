@@ -559,7 +559,7 @@ class RAGContextEngine:
     # ------------------------------------------------------------------
 
     async def ask_async(self, query: str, session_id: str = "default", mode: str = "context_engine",
-                  source_filter: str = None, top_k: int = 5, context_limit: Optional[int] = None) -> Dict:
+                  source_filter: str = None, top_k: int = 5, context_limit: Optional[int] = None, bypass_hitl: bool = False) -> Dict:
         """
         The primary async entry point for querying the RAG system.
         """
@@ -641,7 +641,8 @@ class RAGContextEngine:
                 "waiting_for_approval": False,
                 "approval_filepath": "",
                 "approval_tool": "",
-                "pending_file_approvals": {}
+                "pending_file_approvals": {},
+                "bypass_hitl": bypass_hitl
             }
             
             if hasattr(self.multi_agent_checkpointer, "aget_tuple"):
@@ -731,12 +732,10 @@ class RAGContextEngine:
                 search_queries = await self._phase_expand_async(query, mode, latencies)
                 
                 # Only run HyDE if expansion didn't produce sufficient variations
-                if len(search_queries) < 3:
-                    hyde_doc = await self._phase_hyde_async(query, mode, latencies)
-                    if hyde_doc:
-                        search_queries.append(hyde_doc)
-                else:
-                    logger.info("[P1.5: HyDE] Skipped: expansion already produced sufficient variations.")
+                # Run HyDE regardless of expansion length
+                hyde_doc = await self._phase_hyde_async(query, mode, latencies)
+                if hyde_doc:
+                    search_queries.append(hyde_doc)
             else:
                 logger.info(f"[P1: EXPANSION] High confidence ({top_score:.2f}), skipping expansion/HyDE for speed.")
         
@@ -752,7 +751,7 @@ class RAGContextEngine:
         # Apply overflow handling
         overflow_occurred = False
         overflow_steps = []
-        initial_tokens = mem_tokens + doc_tokens + 350
+        initial_tokens = count_tokens(self.generation_service.build_prompt(query, final_context))
         final_prompt_tokens = initial_tokens
         if context_limit:
             (final_context, memory_text, compressed_docs, overflow_occurred, overflow_steps,
@@ -839,7 +838,7 @@ class RAGContextEngine:
             }
         }
 
-    async def _run_multi_agent_stream_async(self, query: str, session_id: str, source_filter: Optional[str] = None, context_limit: Optional[int] = None) -> AsyncGenerator[Dict, None]:
+    async def _run_multi_agent_stream_async(self, query: str, session_id: str, source_filter: Optional[str] = None, context_limit: Optional[int] = None, bypass_hitl: bool = False) -> AsyncGenerator[Dict, None]:
         from langchain_core.messages import HumanMessage, AIMessage
         from src.graph.workflow import get_graph_config
         import time as time_module
@@ -879,7 +878,8 @@ class RAGContextEngine:
             "waiting_for_approval": False,
             "approval_filepath": "",
             "approval_tool": "",
-            "pending_file_approvals": {}
+            "pending_file_approvals": {},
+            "bypass_hitl": bypass_hitl
         }
         
         actions_taken = []
@@ -900,52 +900,53 @@ class RAGContextEngine:
                     yield ev
 
         try:
+            # Use LangGraph values streaming to receive state changes directly
             async for event in get_stream():
+                # Emit generic state change event (optional)
+                yield {"event": "state_change", "state": event}
+
                 for node_name, state_delta in event.items():
-                    yield {"event": "node_start", "node": node_name}
-                    
-                    # Check if this is coding_worker waiting for approval - emit blocked_tool then
-                    # a waiting_for_approval event (NOT done) so the frontend keeps its interactive
-                    # approval UI alive instead of collapsing the stream.
-                    if node_name == "coding_worker_node" and state_delta.get("waiting_for_approval"):
+                    # Handle waiting for approval
+                    if state_delta.get("waiting_for_approval"):
                         approval_filepath = state_delta.get("approval_filepath", "")
                         approval_tool = state_delta.get("approval_tool", "")
                         yield {"event": "blocked_tool", "filepath": approval_filepath, "tool": approval_tool}
                         yield {"event": "waiting_for_approval", "filepath": approval_filepath, "tool": approval_tool}
-                    
+                        return
+
+                    # Supervisor node handling using values
                     if node_name == "supervisor_node":
                         llm_call_count += 1
                         current_plan = state_delta.get("plan", current_plan)
                         next_agent = state_delta.get("next_agent", "")
                         current_task = state_delta.get("current_task", "")
                         parallel_tasks = state_delta.get("parallel_tasks", [])
-                        
+
                         for step in current_plan:
                             if step not in goals_set:
                                 goals_set.append(step)
-                                
+
                         thought_msg = f"Supervisor: Evaluated findings. Current Plan: {current_plan}. Next Agent: {next_agent}."
                         if current_task:
                             thought_msg += f" Task: '{current_task}'."
                         elif parallel_tasks:
                             thought_msg += f" Parallel tasks: {parallel_tasks}."
-                            
                         yield {"event": "thought", "text": thought_msg}
-                        
+
                         if next_agent == "parallel":
                             action_input = ", ".join([f"{t.get('worker')}: '{t.get('task')}'" for t in parallel_tasks])
                             yield {"event": "action", "tool": "Parallel Dispatch", "input": action_input}
-                            
+
                             actions_taken.append({
                                 "step": len(actions_taken),
                                 "thought": f"Supervisor evaluated progress. Plan: {current_plan}",
                                 "tool": "Parallel Dispatch",
                                 "input": action_input,
-                                "observation": f"Dispatched tasks to parallel workers."
+                                "observation": "Dispatched tasks to parallel workers."
                             })
                         elif next_agent == "synthesizer":
                             yield {"event": "action", "tool": "Synthesizer Routing", "input": "Synthesizing final response"}
-                            
+
                             actions_taken.append({
                                 "step": len(actions_taken),
                                 "thought": f"Supervisor evaluated progress. Plan: {current_plan}. All tasks completed.",
@@ -955,7 +956,7 @@ class RAGContextEngine:
                             })
                         else:
                             yield {"event": "action", "tool": f"Route to {next_agent}", "input": current_task}
-                            
+
                             actions_taken.append({
                                 "step": len(actions_taken),
                                 "thought": f"Supervisor evaluated progress. Plan: {current_plan}",
@@ -963,8 +964,8 @@ class RAGContextEngine:
                                 "input": current_task,
                                 "observation": f"Routing execution to {next_agent}."
                             })
-                            
-                    elif node_name in ["rag_worker_node", "web_worker_node", "utility_worker_node", "scraper_worker_node", "critic_worker_node", "coding_worker_node", "code_critic_worker_node"]:
+                                
+                    if node_name in ["rag_worker_node", "web_worker_node", "utility_worker_node", "scraper_worker_node", "critic_worker_node", "coding_worker_node", "code_critic_worker_node"]:
                         llm_call_count += 1
                         worker_type = state_delta.get("worker_type", "")
                         if not worker_type:
@@ -1000,8 +1001,8 @@ class RAGContextEngine:
                             "input": current_task,
                             "observation": response
                         })
-                        
-                    elif node_name == "synthesizer_node":
+                            
+                    if node_name == "synthesizer_node":
                         llm_call_count += 1
                         final_answer = state_delta.get("final_answer", "")
                         
@@ -1078,7 +1079,7 @@ class RAGContextEngine:
             yield {"event": "error", "message": err_msg}
 
     async def ask_stream_async(self, query: str, session_id: str = "default", mode: str = "context_engine",
-                         source_filter: str = None, top_k: int = 5, context_limit: Optional[int] = None) -> AsyncGenerator[Dict, None]:
+                         source_filter: str = None, top_k: int = 5, context_limit: Optional[int] = None, bypass_hitl: bool = False) -> AsyncGenerator[Dict, None]:
         """
         Asynchronous streaming query endpoint. Yields progress updates and LLM output tokens.
         """
@@ -1086,7 +1087,7 @@ class RAGContextEngine:
         import time as time_module
         
         if mode == "agentic":
-            async for event in self._run_multi_agent_stream_async(query, session_id, source_filter, context_limit=context_limit):
+            async for event in self._run_multi_agent_stream_async(query, session_id, source_filter, context_limit=context_limit, bypass_hitl=bypass_hitl):
                 yield event
             return
         
@@ -1130,14 +1131,11 @@ class RAGContextEngine:
                 # to prevent LLM API contention and vector store connection pool exhaustion.
                 search_queries = await self._phase_expand_async(query, mode, latencies)
                 
-                # Only run HyDE if expansion didn't produce sufficient variations
-                if len(search_queries) < 3:
-                    hyde_doc = await self._phase_hyde_async(query, mode, latencies)
-                    if hyde_doc:
-                        search_queries.append(hyde_doc)
-                    yield {"event": "action", "tool": "Query Expansion & HyDE", "input": f"Variations: {search_queries}"}
-                else:
-                    yield {"event": "action", "tool": "Query Expansion", "input": f"Variations: {search_queries}"}
+                # Run HyDE sequentially regardless of expansion length
+                hyde_doc = await self._phase_hyde_async(query, mode, latencies)
+                if hyde_doc:
+                    search_queries.append(hyde_doc)
+                yield {"event": "action", "tool": "Query Expansion & HyDE", "input": f"Variations: {search_queries}"}
             else:
                 yield {"event": "thought", "text": f"High confidence ({top_score:.2f}), using fast path..."}
         else:
@@ -1158,7 +1156,7 @@ class RAGContextEngine:
         # Apply overflow handling
         overflow_occurred = False
         overflow_steps = []
-        initial_tokens = mem_tokens + doc_tokens + 350
+        initial_tokens = count_tokens(self.generation_service.build_prompt(query, final_context))
         final_prompt_tokens = initial_tokens
         
         if context_limit:
