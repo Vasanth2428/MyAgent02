@@ -130,7 +130,8 @@ class TestCodingWorker(unittest.TestCase):
         state = {
             "current_task": "Modify the file",
             "scratchpad": "",
-            "messages": []
+            "messages": [],
+            "patch_is_verified": True
         }
         
         mock_modify = MagicMock()
@@ -168,7 +169,8 @@ class TestCodingWorker(unittest.TestCase):
         state = {
             "current_task": "Create banking_form.html",
             "scratchpad": "[APPROVED: ./workspace/banking_form.html]",
-            "messages": []
+            "messages": [],
+            "patch_is_verified": True
         }
     
         mock_create = MagicMock()
@@ -372,7 +374,8 @@ Action Input: {"directory": "."}
             "current_task": "Create new file",
             "scratchpad": "",
             "messages": [],
-            "configurable": {"thread_id": "test_thread"}
+            "configurable": {"thread_id": "test_thread"},
+            "patch_is_verified": True
         }
         
         with patch("src.graph.supervisor.is_file_approved") as mock_approved:
@@ -421,7 +424,8 @@ Action Input: {"directory": "."}
             "coding_worker_step": 1,
             "coding_worker_tool_calls_count": 1,
             "coding_worker_resume_tool_result": "Success: Created res.py",
-            "coding_worker_resume_tool_call_id": "call_res"
+            "coding_worker_resume_tool_call_id": "call_res",
+            "patch_is_verified": True
         }
         
         mock_create = MagicMock()
@@ -434,10 +438,11 @@ Action Input: {"directory": "."}
             self.assertEqual(res["worker_complete"]["coding_worker"], True)
             self.assertEqual(res["worker_outputs"]["coding_worker"], "Finished task after resume.")
             
-            # verify resume result was applied to the private transcript
+            # verify resume result was appended to the private transcript
             invoked_messages = mock_llm.invoke.call_args[0][0]
-            # The tool message content should be updated to "Success: Created res.py"
-            self.assertEqual(invoked_messages[3].content, "Success: Created res.py")
+            self.assertEqual(len(invoked_messages), 6)
+            self.assertEqual(invoked_messages[3].content, "Approval required...")
+            self.assertEqual(invoked_messages[4].content, "Human Approved. Execution Result:\nSuccess: Created res.py")
 
     @patch("src.agents.coding_worker.get_coding_model")
     def test_coding_worker_clears_private_resume_state_after_completion(self, mock_get_model):
@@ -469,6 +474,92 @@ Action Input: {"directory": "."}
         self.assertEqual(res["coding_worker_tool_calls_count"], 0)
         self.assertIsNone(res["coding_worker_resume_tool_result"])
         self.assertIsNone(res["coding_worker_resume_tool_call_id"])
+
+    def test_scaffold_react_app_tool(self):
+        """Verifies scaffold_react_app tool executes correctly."""
+        from src.agents.coding_worker import scaffold_react_app
+        with patch("src.agents.coding_worker._scaffold_react_app") as mock_scaffold:
+            mock_scaffold.return_value = "Success: Scaffolded React application 'test_proj' successfully."
+            res = scaffold_react_app.invoke({"project_name": "test_proj"})
+            self.assertEqual(res, "Success: Scaffolded React application 'test_proj' successfully.")
+            mock_scaffold.assert_called_once_with("test_proj")
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    def test_coding_worker_multi_file_approval_queue(self, mock_get_model):
+        """Verifies that multiple file operations are queued and processed together."""
+        from src.agents.coding_worker import _pending_approvals, _session_resume_results, execute_pending_approval
+        
+        # Clear caches
+        session_id = "test_multi_session"
+        if session_id in _pending_approvals:
+            del _pending_approvals[session_id]
+        if session_id in _session_resume_results:
+            del _session_resume_results[session_id]
+            
+        # 1. Test queue execution
+        mock_create = MagicMock()
+        mock_create.invoke.side_effect = lambda args: f"Created {args['filepath']}"
+        
+        with patch.dict(tools_map, {"create_files": mock_create}):
+            from src.agents.coding_worker import set_pending_approval
+            set_pending_approval(session_id, "file1.py", "create_files", {"filepath": "file1.py", "content": "c1"}, "id1")
+            set_pending_approval(session_id, "file2.py", "create_files", {"filepath": "file2.py", "content": "c2"}, "id2")
+            
+            res_exec = execute_pending_approval(session_id)
+            self.assertIn("file1.py", res_exec)
+            self.assertIn("file2.py", res_exec)
+            
+            # verify results cache
+            self.assertIn(session_id, _session_resume_results)
+            self.assertEqual(len(_session_resume_results[session_id]), 2)
+            self.assertEqual(_session_resume_results[session_id][0]["result"], "Created file1.py")
+            self.assertEqual(_session_resume_results[session_id][1]["result"], "Created file2.py")
+            
+        # 2. Test resume from multiple results in coding_worker_node
+        agent_messages = [
+            SystemMessage(content="system_prompt"),
+            HumanMessage(content="task"),
+            AIMessage(content="I will create two files.", tool_calls=[
+                {"name": "create_files", "args": {"filepath": "file1.py", "content": "c1"}, "id": "id1"},
+                {"name": "create_files", "args": {"filepath": "file2.py", "content": "c2"}, "id": "id2"}
+            ]),
+            ToolMessage(content="Approval required...", tool_call_id="id1", name="create_files"),
+            ToolMessage(content="Approval required...", tool_call_id="id2", name="create_files")
+        ]
+        
+        mock_response_stop = MagicMock()
+        mock_response_stop.tool_calls = []
+        mock_response_stop.content = "Finished multi-resume."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = mock_response_stop
+        mock_get_model.return_value = mock_llm
+        
+        state = {
+            "current_task": "Create files",
+            "scratchpad": "",
+            "messages": [],
+            "configurable": {"thread_id": session_id},
+            "coding_worker_messages": agent_messages,
+            "coding_worker_step": 1,
+            "coding_worker_tool_calls_count": 2,
+            "patch_is_verified": True
+        }
+        
+        # We must re-populate the cache because execute_pending_approval deleted it and put it in _session_resume_results
+        _session_resume_results[session_id] = [
+            {"tool_call_id": "id1", "tool_name": "create_files", "result": "Success: Created file1.py"},
+            {"tool_call_id": "id2", "tool_name": "create_files", "result": "Success: Created file2.py"}
+        ]
+        
+        res_node = coding_worker_node(state)
+        self.assertEqual(res_node["worker_complete"]["coding_worker"], True)
+        
+        invoked_messages = mock_llm.invoke.call_args[0][0]
+        # Should have System, Human, AI, Tool1_Placeholder, Tool2_Placeholder, Tool1_Result, Tool2_Result, Response
+        self.assertEqual(len(invoked_messages), 8)
+        self.assertEqual(invoked_messages[5].content, "Human Approved. Execution Result:\nSuccess: Created file1.py")
+        self.assertEqual(invoked_messages[6].content, "Human Approved. Execution Result:\nSuccess: Created file2.py")
 
 
 if __name__ == "__main__":

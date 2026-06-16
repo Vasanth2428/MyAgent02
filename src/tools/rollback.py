@@ -8,7 +8,7 @@ from src.tools.coding_tools import WORKSPACE_ROOT
 
 logger = logging.getLogger("MultiAgent.Rollback")
 
-BACKUP_ROOT = os.path.join(WORKSPACE_ROOT, ".kilo", "backups")
+BACKUP_ROOT = os.path.join(WORKSPACE_ROOT, ".backups")
 
 
 def _ensure_backup_dir() -> None:

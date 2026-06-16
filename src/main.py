@@ -67,6 +67,8 @@ def run_query(query: str, thread_id: str = "default"):
         "approval_requested": None,
         "approval_filepath": "",
         "pending_file_approvals": {},
+        "patch_is_verified": False,
+        "active_project": "",
         "session_id": "default_session",
         # Pipeline 1: Retrieval context cache references
         "context_cache_id": None,

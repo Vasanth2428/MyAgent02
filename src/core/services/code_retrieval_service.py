@@ -53,10 +53,19 @@ class CodeRetrievalService:
             self.registry.save_index()
 
     def sync_index(self) -> None:
-        """Forces a directory scan and persists the updated index."""
-        logger.info("Synchronizing code index...")
-        self.indexer.index_repository()
-        self.registry.save_index()
+        """Forces a directory scan and persists the updated index on a background thread."""
+        import threading
+        def _sync():
+            try:
+                logger.info("Synchronizing code index on background thread...")
+                self.indexer.index_repository()
+                self.registry.save_index()
+                logger.info("Code index synchronization complete.")
+            except Exception as e:
+                logger.error(f"Failed background index synchronization: {e}")
+                
+        sync_thread = threading.Thread(target=_sync, daemon=True)
+        sync_thread.start()
 
     def search_symbols(self, query: str) -> List[Dict[str, Any]]:
         """Fuzzy searches the symbol table for matching functions, methods, or classes."""

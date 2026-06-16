@@ -35,6 +35,14 @@ ALLOWED_COMMANDS = [
 ]
 
 
+_active_project: str = ""
+
+def set_active_project(project_name: str) -> None:
+    """Sets the active project subdirectory name to programmatically restrict file writes."""
+    global _active_project
+    _active_project = project_name
+
+
 def sanitize_file_content_for_llm(content: str) -> str:
     """Sanitize read file content to prevent prompt injections."""
     dangerous_phrases = [
@@ -58,6 +66,22 @@ def _is_safe_path(filepath: str) -> bool:
     forbidden_prefixes = ("/", "/etc", "/root", "/usr", "/var", "..")
     if any(norm_path.startswith(p) for p in forbidden_prefixes) or "../" in norm_path:
         return False
+        
+    # Programmatic active project boundary enforcement
+    global _active_project
+    if _active_project:
+        clean_path = norm_path
+        while clean_path.startswith("./"):
+            clean_path = clean_path[2:]
+        if clean_path.startswith("workspace/"):
+            clean_path = clean_path[len("workspace/"):]
+        while clean_path.startswith("./"):
+            clean_path = clean_path[2:]
+            
+        allowed_root_configs = {"vite.config.js", "package.json"}
+        if clean_path not in allowed_root_configs:
+            if not (clean_path == _active_project or clean_path.startswith(_active_project + "/")):
+                return False
         
     real_workspace = os.path.realpath(WORKSPACE_ROOT)
     abs_path = os.path.realpath(os.path.join(WORKSPACE_ROOT, filepath))
@@ -624,3 +648,161 @@ def execute_command(command: str) -> str:
 def run_safe_commands(command: str) -> str:
     """Execute a shell command in the `./workspace` folder."""
     return execute_command(command)
+
+
+def update_vite_config_root(project_name: str) -> None:
+    """Programmatically updates the root option in workspace/vite.config.js."""
+    config_path = os.path.join(WORKSPACE_ROOT, "vite.config.js")
+    
+    # Default config template if not exists
+    default_config = (
+        "import { defineConfig } from 'vite'\n"
+        "import react from '@vitejs/plugin-react'\n\n"
+        "// https://vitejs.dev/config/\n"
+        "export default defineConfig({\n"
+        "  plugins: [react()],\n"
+        f"  root: './{project_name}'\n"
+        "})\n"
+    )
+    
+    if not os.path.exists(config_path):
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(default_config)
+        return
+        
+    with open(config_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        
+    # Check if root is already defined
+    if "root:" in content:
+        # Replace the root line
+        new_content = re.sub(
+            r"root:\s*['\"].*?['\"]",
+            f"root: './{project_name}'",
+            content
+        )
+    else:
+        # Insert root after defineConfig({
+        match = re.search(r"defineConfig\s*\(\s*\{", content)
+        if match:
+            idx = match.end()
+            new_content = content[:idx] + f"\n  root: './{project_name}'," + content[idx:]
+        else:
+            new_content = default_config
+            
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+
+
+def scaffold_react_app(project_name: str) -> str:
+    """
+    Scaffolds a new React+Vite application inside `./workspace/[project_name]/`.
+    Creates standard directories and files, and updates parent vite.config.js.
+    """
+    # Clean project_name
+    project_name = "".join(c for c in project_name if c.isalnum() or c in "-_")
+    if not project_name:
+        return "Error: Invalid project name."
+        
+    project_dir = os.path.join(WORKSPACE_ROOT, project_name)
+    src_dir = os.path.join(project_dir, "src")
+    
+    try:
+        # 1. Create directory structure
+        os.makedirs(src_dir, exist_ok=True)
+        
+        # 2. Write package.json if it doesn't exist in workspace
+        pkg_path = os.path.join(WORKSPACE_ROOT, "package.json")
+        if not os.path.exists(pkg_path):
+            package_json_content = """{
+  "name": "workspace-apps",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.4"
+  }
+}"""
+            with open(pkg_path, "w", encoding="utf-8") as f:
+                f.write(package_json_content)
+                
+        # 3. Write index.html
+        html_path = os.path.join(project_dir, "index.html")
+        html_content = """<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>React App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/index.jsx"></script>
+  </body>
+</html>"""
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+            
+        # 4. Write src/index.jsx
+        index_jsx_path = os.path.join(src_dir, "index.jsx")
+        index_jsx_content = """import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+import './App.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)"""
+        with open(index_jsx_path, "w", encoding="utf-8") as f:
+            f.write(index_jsx_content)
+            
+        # 5. Write src/App.jsx
+        app_jsx_path = os.path.join(src_dir, "App.jsx")
+        app_jsx_content = """import React from 'react'
+
+function App() {
+  return (
+    <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
+      <h1>React App Scaffolding Successful</h1>
+      <p>Start editing src/App.jsx to customize your application.</p>
+    </div>
+  )
+}
+
+export default App"""
+        with open(app_jsx_path, "w", encoding="utf-8") as f:
+            f.write(app_jsx_content)
+            
+        # 6. Write src/App.css
+        app_css_path = os.path.join(src_dir, "App.css")
+        app_css_content = """/* App styles */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #f5f5f5;
+}"""
+        with open(app_css_path, "w", encoding="utf-8") as f:
+            f.write(app_css_content)
+            
+        # 7. Update parent vite.config.js root option
+        update_vite_config_root(project_name)
+        
+        return f"Success: Scaffolded React application '{project_name}' successfully."
+        
+    except Exception as e:
+        return f"Error scaffolding React application: {e}"

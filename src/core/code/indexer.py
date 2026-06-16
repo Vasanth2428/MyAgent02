@@ -40,7 +40,8 @@ class CodeIndexer:
         # Folders to exclude from indexing
         self.exclude_dirs = {
             ".git", "__pycache__", ".venv", "venv", "node_modules", "checkpoints", 
-            ".pytest_cache", ".ruff_cache", "logs", "reports", ".next", "dist", "build"
+            ".pytest_cache", ".ruff_cache", "logs", "reports", ".next", "dist", "build",
+            ".kilo", ".backups"
         }
 
     def index_repository(self) -> None:

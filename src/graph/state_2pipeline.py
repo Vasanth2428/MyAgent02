@@ -81,6 +81,8 @@ class AgentState(TypedDict):
     coding_worker_resume_tool_result: Optional[str]
     coding_worker_resume_tool_call_id: Optional[str]
     bypass_hitl: Optional[bool]
+    patch_is_verified: bool
+    active_project: str
     # TEMPORARY FIELDS FOR WORKER NODE COMPATIBILITY (cleared after processing)
     scratchpad: str  # Temporary text scratchpad for worker nodes
     worker_outputs: Annotated[Dict[str, str], merge_dicts]  # Temporary full text outputs for worker nodes

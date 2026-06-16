@@ -14,6 +14,7 @@ from src.tools.coding_tools import create_files as _create_files
 from src.tools.coding_tools import modify_files as _modify_files
 from src.tools.coding_tools import run_safe_commands as _run_safe_commands
 from src.tools.coding_tools import delete_file as _delete_file
+from src.tools.coding_tools import scaffold_react_app as _scaffold_react_app
 from src.core.config import CODING_WORKER_MODEL_PRIMARY, CODING_WORKER_MODEL_FALLBACK
 
 logger = logging.getLogger("MultiAgent.CodingWorker")
@@ -335,6 +336,11 @@ def delete_file(filepath: str) -> str:
     """Delete a file in the './workspace' folder."""
     return _delete_file(filepath)
 
+@tool
+def scaffold_react_app(project_name: str) -> str:
+    """Scaffolds a new React+Vite application inside `./workspace/[project_name]/`. Creates standard directories and files, and updates parent vite.config.js."""
+    return _scaffold_react_app(project_name)
+
 # Map of tool names to actual functions for invocation
 tools_map = {
     "read_files": read_files,
@@ -353,7 +359,8 @@ tools_map = {
     "audit_file_security": audit_file_security,
     "get_call_graph": get_call_graph,
     "get_symbols_in_file": get_symbols_in_file,
-    "delete_file": delete_file
+    "delete_file": delete_file,
+    "scaffold_react_app": scaffold_react_app
 }
 tools = list(tools_map.values())
 
@@ -364,7 +371,7 @@ def get_coding_model(task: str = ""):
     api_key = primary_key or os.getenv("AGENT_API_KEY")
     
     # Prune tools if the task is simple to save token budget
-    keywords = ["dependency", "dependencies", "symbol", "symbols", "call graph", "audit", "security", "patch", "diff", "hybrid", "create", "write", "file", "modify", "edit"]
+    keywords = ["dependency", "dependencies", "symbol", "symbols", "call graph", "audit", "security", "patch", "diff", "hybrid", "create", "write", "file", "modify", "edit", "scaffold"]
     use_full_tools = any(kw in task.lower() for kw in keywords) if task else True
     
     if use_full_tools:
@@ -407,6 +414,41 @@ Do not return any other text, only the JSON object.
 """
 
 
+def extract_clean_json(content: str) -> str:
+    """Finds and extracts the largest valid balanced JSON object string, ignoring braces inside strings."""
+    first_brace = content.find('{')
+    if first_brace == -1:
+        return ""
+    
+    brace_count = 0
+    in_string = False
+    escape = False
+    
+    for i in range(first_brace, len(content)):
+        char = content[i]
+        
+        if escape:
+            escape = False
+            continue
+            
+        if char == '\\':
+            escape = True
+            continue
+            
+        if char == '"':
+            in_string = not in_string
+            continue
+            
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return content[first_brace:i+1]
+    return ""
+
+
 def is_task_compatible(task: str) -> tuple[bool, str]:
     """
     Validates if the coding task is strictly within the allowed capabilities:
@@ -415,7 +457,6 @@ def is_task_compatible(task: str) -> tuple[bool, str]:
     Returns (is_compatible, explanation_if_not_compatible).
     """
     import json
-    import re
     
     logger.info(f"Validating capability for task: {task[:100]}...")
     try:
@@ -425,9 +466,9 @@ def is_task_compatible(task: str) -> tuple[bool, str]:
             HumanMessage(content=f"Task: {task}")
         ])
         content = response.content.strip()
-        json_match = re.search(r"\{.*\}", content, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group(0))
+        extracted = extract_clean_json(content)
+        if extracted:
+            data = json.loads(extracted)
             is_compatible = data.get("is_compatible", True)
             explanation = data.get("explanation", "")
             if not is_compatible and not explanation:
@@ -458,12 +499,11 @@ def parse_malformed_tool_calls(content: str) -> List[dict]:
     # 1. Look for markdown code blocks containing JSON
     json_blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
     
-    # 2. If no code blocks, look for any JSON-like dict in the text
+    # 2. If no code blocks, look for any JSON-like dict in the text using balanced brace extraction
     if not json_blocks:
-        # Match from the first '{' to the last '}'
-        json_match = re.search(r"(\{.*\})", content, re.DOTALL)
-        if json_match:
-            json_blocks = [json_match.group(1)]
+        extracted = extract_clean_json(content)
+        if extracted:
+            json_blocks = [extracted]
 
     for block in json_blocks:
         try:
@@ -525,6 +565,9 @@ def coding_worker_node(state: dict) -> dict:
     """
     Coding worker node that executes an internal loop of tool calls to solve a task.
     """
+    from src.tools.coding_tools import set_active_project
+    set_active_project(state.get("active_project", ""))
+    
     from src.tools.safety_filters import sanitize_user_input
     
     session_id = state.get("configurable", {}).get("thread_id", "default")
@@ -612,15 +655,45 @@ def coding_worker_node(state: dict) -> dict:
         step = int(state.get("coding_worker_step", 0))
         tool_calls_count = int(state.get("coding_worker_tool_calls_count", 0))
         
-        # Apply resume result if present
-        resume_result = state.get("coding_worker_resume_tool_result")
-        resume_tool_call_id = state.get("coding_worker_resume_tool_call_id")
-        if resume_result and resume_tool_call_id:
-            for msg in reversed(agent_messages):
-                if getattr(msg, "tool_call_id", None) == resume_tool_call_id:
-                    msg.content = resume_result
-                    break
+        # Apply resume results
+        resume_results = _session_resume_results.pop(session_id, None)
+        if resume_results:
+            for item in resume_results:
+                t_id = item["tool_call_id"]
+                t_name = item["tool_name"]
+                t_res = item["result"]
+                
+                execution_message = ToolMessage(
+                    content=f"Human Approved. Execution Result:\n{t_res}" if "rejected" not in t_res.lower() else t_res,
+                    tool_call_id=t_id,
+                    name=t_name
+                )
+                agent_messages.append(execution_message)
+        else:
+            resume_result = state.get("coding_worker_resume_tool_result")
+            resume_tool_call_id = state.get("coding_worker_resume_tool_call_id")
+            if resume_result and resume_tool_call_id:
+                # Find the name of the tool
+                tool_name = "unknown_tool"
+                for msg in reversed(agent_messages):
+                    if isinstance(msg, AIMessage) and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            if tc.get("id") == resume_tool_call_id:
+                                tool_name = tc.get("name")
+                                break
+                execution_message = ToolMessage(
+                    content=f"Human Approved. Execution Result:\n{resume_result}" if "rejected" not in resume_result.lower() else resume_result,
+                    tool_call_id=resume_tool_call_id,
+                    name=tool_name
+                )
+                agent_messages.append(execution_message)
     else:
+        # Fresh turn, clear pending and results
+        if session_id in _pending_approvals:
+            del _pending_approvals[session_id]
+        if session_id in _session_resume_results:
+            del _session_resume_results[session_id]
+
         agent_messages = [
             SystemMessage(content=CODING_SYSTEM_PROMPT),
             HumanMessage(content=f"Task: {target_instruction}\n\nBlackboard Findings: {scratchpad}")
@@ -659,6 +732,7 @@ def coding_worker_node(state: dict) -> dict:
             break
                     
         # Process and execute each tool call
+        blocked_for_approval_list = []
         for tool_call in tool_calls:
             if tool_calls_count >= max_tool_calls:
                 print(f"  Reached tool call limit of {max_tool_calls}. Stopping loop.")
@@ -674,6 +748,22 @@ def coding_worker_node(state: dict) -> dict:
             
             if tool_name in ["create_files", "modify_files", "delete_file"]:
                 filepath = tool_args.get("filepath", "")
+                
+                # Programmatic Patch Verification constraint
+                if tool_name in ["create_files", "modify_files"] and not state.get("bypass_hitl", False):
+                    patch_is_verified = state.get("patch_is_verified", False)
+                    if not patch_is_verified:
+                        for msg in agent_messages:
+                            if isinstance(msg, ToolMessage) and msg.name == "dry_run_and_validate_patch":
+                                if "Success: Patch is valid!" in msg.content:
+                                    patch_is_verified = True
+                                    break
+                    if not patch_is_verified:
+                        raise ValueError(
+                            "Security Constraint Violated: You must generate a patch diff using "
+                            "'create_patch_diff' and dry-run validate it using 'dry_run_and_validate_patch' "
+                            "before calling write operations."
+                        )
                 
                 # Issue #4: Use isolated approval registry instead of scratchpad text scanning
                 from src.graph.supervisor import is_file_approved
@@ -696,45 +786,47 @@ def coding_worker_node(state: dict) -> dict:
                     state["pending_file_approvals"] = pending_file_approvals
                     set_pending_approval(session_id, filepath, tool_name, tool_args, tool_id)
                     
-                    observation = f"Approval required for {tool_name} on {filepath}. Please reply approve or yes to confirm."
+                    obs = f"Approval required for {tool_name} on {filepath}. Please reply approve or yes to confirm."
                     print(f"  Blocked Tool: {tool_name} on {filepath} - Awaiting user approval.")
-                    blocked_for_approval = (tool_name, filepath)
+                    blocked_for_approval_list.append((tool_name, filepath, tool_id, obs))
                     
                     # Append placeholder tool message
-                    tool_message = ToolMessage(content=observation, tool_call_id=tool_id, name=tool_name)
+                    tool_message = ToolMessage(content=obs, tool_call_id=tool_id, name=tool_name)
                     agent_messages.append(tool_message)
-                    break
                 else:
                     tool_func = tools_map[tool_name]
                     try:
                         observation = tool_func.invoke(tool_args)
                     except Exception as e:
                         observation = f"Error executing tool '{tool_name}': {e}"
+                    print(f"  Observation (first 100 chars): {observation[:100]}")
+                    tool_message = ToolMessage(content=observation, tool_call_id=tool_id, name=tool_name)
+                    agent_messages.append(tool_message)
             elif tool_name in tools_map:
                 tool_func = tools_map[tool_name]
                 try:
                     observation = tool_func.invoke(tool_args)
+                    # Track successful patch verification in state
+                    if tool_name == "dry_run_and_validate_patch" and "Success: Patch is valid!" in observation:
+                        state["patch_is_verified"] = True
                 except Exception as e:
                     observation = f"Error executing tool '{tool_name}': {e}"
+                print(f"  Observation (first 100 chars): {observation[:100]}")
+                tool_message = ToolMessage(content=observation, tool_call_id=tool_id, name=tool_name)
+                agent_messages.append(tool_message)
             else:
                 observation = f"Error: Tool '{tool_name}' is not registered."
-            
-            # Skip tool_message when blocked for approval (already handled above)
-            if not blocked_for_approval:
                 print(f"  Observation (first 100 chars): {observation[:100]}")
-                
-                # Feed the observation back to the agent history
                 tool_message = ToolMessage(content=observation, tool_call_id=tool_id, name=tool_name)
                 agent_messages.append(tool_message)
             
         if tool_calls_count >= max_tool_calls:
             break
 
-        # If we blocked for approval, also exit the outer while loop immediately.
-        # Continuing would give the LLM an AIMessage with an unresolved tool_call
-        # but no ToolMessage response, which is an invalid state that causes it to
-        # generate no tool calls and prematurely mark the worker as complete.
-        if blocked_for_approval:
+        # If we blocked for approval, exit the outer loop.
+        if blocked_for_approval_list:
+            blocked_for_approval = (blocked_for_approval_list[0][0], blocked_for_approval_list[0][1])
+            observation = "\n".join([item[3] for item in blocked_for_approval_list])
             break
             
     completed = True
@@ -767,6 +859,7 @@ def coding_worker_node(state: dict) -> dict:
                 "coding_worker_messages": agent_messages,
                 "coding_worker_step": step,
                 "coding_worker_tool_calls_count": tool_calls_count,
+                "patch_is_verified": state.get("patch_is_verified", False),
             },
             goto="supervisor_node",
         )
@@ -783,37 +876,101 @@ def coding_worker_node(state: dict) -> dict:
         "coding_worker_tool_calls_count": 0,
         "coding_worker_resume_tool_result": None,
         "coding_worker_resume_tool_call_id": None,
+        "patch_is_verified": False,
     }
 
 # Pending approval storage for streaming support
-_pending_approvals: Dict[str, Dict] = {}  # session_id -> {filepath, tool, args, tool_call_id}
+_pending_approvals: Dict[str, List[Dict]] = {}  # session_id -> list of {filepath, tool, args, tool_call_id}
+_session_resume_results: Dict[str, List[Dict]] = {}  # session_id -> list of {tool_call_id, tool_name, result}
 
 def get_pending_approval(session_id: str) -> Optional[Dict]:
-    """Retrieve pending patch diff for a session."""
-    return _pending_approvals.get(session_id)
+    """Retrieve the first pending patch diff for a session to maintain backward compatibility."""
+    pending_list = _pending_approvals.get(session_id)
+    if pending_list and len(pending_list) > 0:
+        return pending_list[0]
+    return None
 
 def set_pending_approval(session_id: str, filepath: str, tool: str, args: dict, tool_call_id: Optional[str] = None) -> None:
-    """Store pending patch diff for a session."""
-    _pending_approvals[session_id] = {"filepath": filepath, "tool": tool, "args": args, "tool_call_id": tool_call_id}
+    """Store pending patch diff for a session, appending to a list to avoid overwriting multiple files."""
+    if session_id not in _pending_approvals:
+        _pending_approvals[session_id] = []
+    _pending_approvals[session_id].append({
+        "filepath": filepath,
+        "tool": tool,
+        "args": args,
+        "tool_call_id": tool_call_id
+    })
 
 def clear_pending_approval(session_id: str) -> None:
-    """Clear pending approvals after user decision."""
+    """Clear pending approvals after user decision (populating rejection results for resume)."""
     if session_id in _pending_approvals:
+        pending_list = _pending_approvals[session_id]
+        results = []
+        for pending in pending_list:
+            results.append({
+                "tool_call_id": pending["tool_call_id"],
+                "tool_name": pending["tool"],
+                "result": "Error: User rejected the proposed file modifications."
+            })
+        _session_resume_results[session_id] = results
         del _pending_approvals[session_id]
 
 def execute_pending_approval(session_id: str) -> str:
-    """Execute a pending approval if it exists."""
-    if session_id not in _pending_approvals:
+    """Execute all pending approvals for a session."""
+    if session_id not in _pending_approvals or not _pending_approvals[session_id]:
         return "No pending approval found."
-    pending = _pending_approvals[session_id]
-    tool_func = tools_map.get(pending["tool"])
-    if not tool_func:
-        return f"Tool '{pending['tool']}' not found."
-    try:
-        result = tool_func.invoke(pending["args"])
-        clear_pending_approval(session_id)
-        return result
-    except Exception as e:
-        return f"Error executing tool: {e}"
+        
+    pending_list = _pending_approvals[session_id]
+    results = []
+    success_files = []
+    error_msgs = []
+    
+    for pending in pending_list:
+        tool_name = pending["tool"]
+        tool_args = pending["args"]
+        tool_id = pending["tool_call_id"]
+        filepath = pending["filepath"]
+        
+        tool_func = tools_map.get(tool_name)
+        if not tool_func:
+            err = f"Tool '{tool_name}' not found."
+            results.append({
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                "result": err
+            })
+            error_msgs.append(err)
+            continue
+            
+        try:
+            result = tool_func.invoke(tool_args)
+            results.append({
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                "result": result
+            })
+            if "error" in result.lower() or "fail" in result.lower():
+                error_msgs.append(f"{filepath}: {result}")
+            else:
+                success_files.append(filepath)
+        except Exception as e:
+            err = f"Error executing tool: {e}"
+            results.append({
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                "result": err
+            })
+            error_msgs.append(f"{filepath}: {err}")
+            
+    _session_resume_results[session_id] = results
+    del _pending_approvals[session_id]
+    
+    summary_parts = []
+    if success_files:
+        summary_parts.append(f"Successfully processed: {', '.join(success_files)}")
+    if error_msgs:
+        summary_parts.append(f"Errors occurred:\n" + "\n".join(error_msgs))
+        
+    return "; ".join(summary_parts) if summary_parts else "No action taken."
 
 
