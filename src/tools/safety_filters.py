@@ -57,11 +57,3 @@ def truncate_results(results: List[Dict], max_items: int = MAX_RESULTS) -> List[
     """Truncate search results to prevent context overflow."""
     return results[:max_items]
 
-
-def safe_extract(text: str, start: int = 0, end: int = None) -> str:
-    """Safely extract text within bounds."""
-    if not text:
-        return ""
-    if end is None:
-        end = len(text)
-    return text[start:end]
