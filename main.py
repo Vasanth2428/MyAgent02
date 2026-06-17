@@ -33,7 +33,7 @@ print(f"DEBUG: sys.executable = {sys.executable}", flush=True)
 print(f"DEBUG: sentence-transformers = {sentence_transformers.__version__}", flush=True)
 print(f"DEBUG: transformers = {transformers.__version__}", flush=True)
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -83,15 +83,18 @@ from src.core.scraper import close_aiohttp_session
 
 # Configure Application Logging
 import logging.handlers
+from src.core.logging_setup import SessionFileHandler, session_id_var
 os.makedirs("logs", exist_ok=True)
 
-file_handler = logging.handlers.RotatingFileHandler(
-    "logs/rag_engine.log", maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
-)
 console_handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
+
+file_handler = SessionFileHandler(
+    default_log_path="logs/rag_engine.log",
+    log_dir="logs/sessions",
+    formatter=formatter
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,6 +190,44 @@ class CachedStaticFiles(StaticFiles):
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
+
+
+# Middleware to set session_id context variable for logging
+@app.middleware("http")
+async def add_session_logging_context(request: Request, call_next):
+    session_id = None
+    
+    # 1. Parse session_id from request path parameters
+    parts = request.url.path.strip("/").split("/")
+    if len(parts) >= 2 and parts[0] in ("history", "sessions", "pending_approval", "resume_stream"):
+        session_id = parts[1]
+        
+    # 2. Check query parameters
+    if not session_id:
+        session_id = request.query_params.get("session_id")
+        
+    # 3. Check JSON request body
+    if not session_id and request.method == "POST":
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.body()
+                if body:
+                    data = json.loads(body)
+                    session_id = data.get("session_id")
+                    # Restore body stream so FastAPI endpoint parameters can read it
+                    async def receive():
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    request._receive = receive
+            except Exception:
+                pass
+                
+    token = session_id_var.set(session_id)
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        session_id_var.reset(token)
 
 
 # ------------------------------------------------------------------

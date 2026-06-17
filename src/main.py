@@ -22,6 +22,7 @@ from src.graph.workflow import build_multi_agent_graph, get_graph_config
 from src.graph.checkpointer import setup_checkpointer
 from langchain_core.messages import HumanMessage
 from src.tools.safety_filters import sanitize_user_input
+from src.core.logging_setup import session_id_var
 
 multi_agent_graph = None
 
@@ -86,9 +87,12 @@ def run_query(query: str, thread_id: str = "default"):
         "final_answer": ""
     }
     
-    
-    result = multi_agent_graph.invoke(initial_state, config=config)
-    return result
+    token = session_id_var.set(thread_id)
+    try:
+        result = multi_agent_graph.invoke(initial_state, config=config)
+        return result
+    finally:
+        session_id_var.reset(token)
 
 
 if __name__ == "__main__":
