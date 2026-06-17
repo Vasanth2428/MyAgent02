@@ -629,5 +629,30 @@ class TestSupervisorEdgeCases:
         # Error should be recorded in scratchpad_references
         refs = result.get("scratchpad_references", [])
         assert any("SYSTEM ERROR" in r for r in refs)
-        # Should still default to synthesizer on failure
         assert result["next_agent"] == "synthesizer"
+
+
+class TestStateReducers:
+    def test_merge_scratchpads_reducer(self):
+        """Verify that merge_scratchpads correctly combines unique bullet points or lines."""
+        from src.graph.state_2pipeline import merge_scratchpads
+        
+        # Test merging empty scratchpads
+        assert merge_scratchpads("", "") == ""
+        assert merge_scratchpads(None, None) == ""
+        
+        # Test basic appending
+        left = "- [RAG Worker]: Hello"
+        right = "- [RAG Worker]: Hello\n- [Web Worker]: World"
+        assert merge_scratchpads(left, right) == "- [RAG Worker]: Hello\n- [Web Worker]: World"
+        
+        # Test parallel concurrent updates (duplicates removed)
+        left = "- [RAG Worker]: Data A"
+        right = "- [Scraper Worker]: Data B"
+        assert merge_scratchpads(left, right) == "- [RAG Worker]: Data A\n- [Scraper Worker]: Data B"
+        
+        # Test mixed duplicates and unique lines
+        left = "- [RAG Worker]: Hello\n- [Critic Worker]: Fix this"
+        right = "- [RAG Worker]: Hello\n- [Web Worker]: Sunny 22C"
+        assert merge_scratchpads(left, right) == "- [RAG Worker]: Hello\n- [Critic Worker]: Fix this\n- [Web Worker]: Sunny 22C"
+

@@ -49,6 +49,26 @@ def merge_scratchpad_references(left: List[str], right: List[str]) -> List[str]:
     return merged
 
 
+def merge_scratchpads(left: str, right: str) -> str:
+    """Reducer that merges scratchpad updates, preserving unique bullet points."""
+    if left is None:
+        left = ""
+    if right is None:
+        right = ""
+    
+    # Split both into lines
+    left_lines = [line.strip() for line in left.split("\n") if line.strip()]
+    right_lines = [line.strip() for line in right.split("\n") if line.strip()]
+    
+    # Merge unique lines preserving order
+    merged = list(left_lines)
+    for line in right_lines:
+        if line not in merged:
+            merged.append(line)
+            
+    return "\n".join(merged)
+
+
 # Lightweight state schema - stores references instead of raw text
 class AgentState(TypedDict):
     session_id: str
@@ -84,7 +104,7 @@ class AgentState(TypedDict):
     patch_is_verified: bool
     active_project: str
     # TEMPORARY FIELDS FOR WORKER NODE COMPATIBILITY (cleared after processing)
-    scratchpad: str  # Temporary text scratchpad for worker nodes
+    scratchpad: Annotated[str, merge_scratchpads]  # Temporary text scratchpad for worker nodes
     worker_outputs: Annotated[Dict[str, str], merge_dicts]  # Temporary full text outputs for worker nodes
     messages: Annotated[List[BaseMessage], add_messages]
     final_answer: str
