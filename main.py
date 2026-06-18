@@ -22,12 +22,15 @@ import transformers
 
 if sys.platform.startswith("win"):
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
-        sys.stderr.reconfigure(encoding='utf-8')
-    except AttributeError:
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        try:
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        except Exception:
+            pass
 
 print(f"DEBUG: sys.executable = {sys.executable}", flush=True)
 print(f"DEBUG: sentence-transformers = {sentence_transformers.__version__}", flush=True)
@@ -68,10 +71,10 @@ def _serialize_event(event):
         return json.dumps(_convert(event))
 
 # Load environment variables from config directory
-load_dotenv(dotenv_path="config/.env")
+load_dotenv(dotenv_path="config/.env", override=True)
 
 # Load environment variables before any local module imports
-load_dotenv()
+load_dotenv(override=True)
 
 import uuid
 
@@ -129,9 +132,10 @@ async def lifespan(app: FastAPI):
         
         async with setup_async_checkpointer() as checkpointer:
             logger.info("Pre-warming local embedding and reranker models...")
-            _ = retriever.embedding_model
-            from src.core.reranker import _get_cross_encoder
-            _ = _get_cross_encoder()
+            from src.core.services.grounding_service import _get_shared_embedding_model
+            _ = _get_shared_embedding_model()
+            from src.core.reranker import _get_flashrank_reranker
+            _ = _get_flashrank_reranker()
             logger.info("Heavy ML models successfully pre-warmed.")
             
             rag = RAGContextEngine(retriever, pipeline_config, checkpointer=checkpointer)
@@ -173,8 +177,27 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Enable Gzip compression for payloads > 1024 bytes
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+from starlette.types import ASGIApp, Scope, Receive, Send
+
+class ConditionalGZipMiddleware:
+    """
+    Middleware that wraps GZipMiddleware but bypasses it for streaming endpoints.
+    This prevents buffering and chunked encoding errors for Server-Sent Events (SSE).
+    """
+    def __init__(self, app: ASGIApp, minimum_size: int = 1024):
+        self.app = app
+        self.gzip_middleware = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path in ("/query_stream", "/resume_stream") or "_stream" in path:
+                await self.app(scope, receive, send)
+                return
+        await self.gzip_middleware(scope, receive, send)
+
+# Enable Gzip compression for payloads > 1024 bytes, bypassing streaming endpoints
+app.add_middleware(ConditionalGZipMiddleware, minimum_size=1024)
 
 # Custom static files class with caching headers
 class CachedStaticFiles(StaticFiles):
@@ -192,42 +215,82 @@ if os.path.isdir(static_dir):
     app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
 
 
-# Middleware to set session_id context variable for logging
-@app.middleware("http")
-async def add_session_logging_context(request: Request, call_next):
-    session_id = None
-    
-    # 1. Parse session_id from request path parameters
-    parts = request.url.path.strip("/").split("/")
-    if len(parts) >= 2 and parts[0] in ("history", "sessions", "pending_approval", "resume_stream"):
-        session_id = parts[1]
-        
-    # 2. Check query parameters
-    if not session_id:
-        session_id = request.query_params.get("session_id")
-        
-    # 3. Check JSON request body
-    if not session_id and request.method == "POST":
-        content_type = request.headers.get("content-type", "")
-        if "application/json" in content_type:
-            try:
-                body = await request.body()
-                if body:
-                    data = json.loads(body)
-                    session_id = data.get("session_id")
-                    # Restore body stream so FastAPI endpoint parameters can read it
-                    async def receive():
+# Pure ASGI middleware to set session_id context variable for logging.
+# IMPORTANT: This must NOT use @app.middleware("http") / BaseHTTPMiddleware because
+# BaseHTTPMiddleware wraps StreamingResponse bodies through an intermediate
+# anyio MemoryObjectStream, which causes premature stream closure and
+# ERR_INCOMPLETE_CHUNKED_ENCODING errors on SSE endpoints.
+class SessionLoggingMiddleware:
+    """Pure ASGI middleware that extracts session_id and sets the logging context variable."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        session_id = None
+        path = scope.get("path", "")
+
+        # 1. Parse session_id from URL path segments
+        parts = path.strip("/").split("/")
+        if len(parts) >= 2 and parts[0] in ("history", "sessions", "pending_approval", "resume_stream"):
+            session_id = parts[1]
+
+        # 2. Check query parameters
+        if not session_id:
+            from urllib.parse import parse_qs
+            qs = scope.get("query_string", b"").decode("utf-8", errors="replace")
+            params = parse_qs(qs)
+            if "session_id" in params:
+                session_id = params["session_id"][0]
+
+        # 3. Check JSON request body for POST requests
+        if not session_id and scope.get("method") == "POST":
+            content_type = ""
+            for hdr_name, hdr_value in scope.get("headers", []):
+                if hdr_name.lower() == b"content-type":
+                    content_type = hdr_value.decode("utf-8", errors="replace")
+                    break
+
+            if "application/json" in content_type:
+                # Buffer the raw body bytes from the ASGI receive channel
+                body_chunks = []
+                while True:
+                    message = await receive()
+                    body_chunks.append(message.get("body", b""))
+                    if not message.get("more_body", False):
+                        break
+                body = b"".join(body_chunks)
+
+                try:
+                    if body:
+                        data = json.loads(body)
+                        session_id = data.get("session_id")
+                except Exception:
+                    pass
+
+                # Replace receive so downstream handlers can still read the body
+                body_replayed = False
+                async def replay_receive():
+                    nonlocal body_replayed
+                    if not body_replayed:
+                        body_replayed = True
                         return {"type": "http.request", "body": body, "more_body": False}
-                    request._receive = receive
-            except Exception:
-                pass
-                
-    token = session_id_var.set(session_id)
-    try:
-        response = await call_next(request)
-        return response
-    finally:
-        session_id_var.reset(token)
+                    # Subsequent calls return empty (Starlette caches after first read)
+                    return {"type": "http.request", "body": b"", "more_body": False}
+
+                receive = replay_receive
+
+        token = session_id_var.set(session_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            session_id_var.reset(token)
+
+app.add_middleware(SessionLoggingMiddleware)
 
 
 # ------------------------------------------------------------------

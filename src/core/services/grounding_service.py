@@ -14,7 +14,8 @@ import threading
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 
-from src.core.config import EMBEDDING_MODEL
+# Model used for client-side semantic checks (hallucination detection, evaluation)
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 logger = logging.getLogger("RAG.Services.Grounding")
 

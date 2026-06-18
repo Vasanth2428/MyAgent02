@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.core.services.grounding_service import _get_shared_embedding_model
-from src.core.reranker import _get_cross_encoder, NeuralReranker, RERANKER_MODEL
+from src.core.reranker import _get_flashrank_reranker, NeuralReranker, RERANKER_MODEL
 
 
 def test_model_initialization_race_condition():
@@ -58,8 +58,8 @@ def test_reranker_model_race_condition():
     def create_reranker():
         try:
             reranker = NeuralReranker()
-            model = reranker.model
-            results.append(model is not None)
+            res = reranker.rerank("cats", [{"text": "cat doc", "score": 0.5}])
+            results.append(len(res) > 0)
             return True
         except Exception as e:
             results.append(False)
@@ -74,7 +74,7 @@ def test_reranker_model_race_condition():
 
 
 def test_cross_encoder_singleton_safety():
-    """Verify CrossEncoder singleton is safe for concurrent access."""
+    """Verify FlashrankRerank singleton is safe for concurrent access."""
     import importlib
     import sys
     
@@ -86,7 +86,7 @@ def test_cross_encoder_singleton_safety():
     lock = threading.Lock()
     
     def get_model():
-        model = _get_cross_encoder()
+        model = _get_flashrank_reranker()
         with lock:
             models.append(id(model))
         return model
@@ -187,10 +187,9 @@ def test_no_crash_under_parallel_init():
             errors.append(str(e))
         
         try:
-            from src.core.reranker import NeuralReranker
+            from src.core.reranker import NeuralReranker, _get_flashrank_reranker
             r = NeuralReranker()
-            # Access model property to trigger lazy load
-            _ = r.model
+            _ = _get_flashrank_reranker()
         except Exception as e:
             errors.append(str(e))
     

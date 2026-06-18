@@ -1,193 +1,177 @@
 """
-RAG Memory - Conversation History That Forgets Gracefully
+RAG Memory - Conversation History via LangGraph InMemoryStore
 
-This module handles remembering what's been said during your conversation. It works
-like a smart notepad that:
-- Keeps track of important facts from your chat
-- Forgets old information automatically (like a fading memory)
-- Recognizes when you're repeating something similar and just refreshes that memory
+This module manages conversation context using LangGraph's native InMemoryStore.
+The store handles cross-thread memory persistence and structured retrieval.
 
-The memory helps the AI give more contextual answers that consider what you've
-already discussed.
+The public interface (ConversationMemory.add / get_active_context) is preserved so
+all callers (memory_service.py) work without modification.
+
+Replaces: custom cosine similarity, numpy decay math, MemoryEntry, tiktoken budgeting.
 """
 
-import re
-import time
 import logging
-import numpy as np
-import tiktoken
-from datetime import datetime
-from typing import List, Optional
-from functools import lru_cache
+import time
+from typing import Optional
+from langgraph.store.memory import InMemoryStore
 
-from src.core.config import (
-    TOKENIZER_ENCODING, MEMORY_DECAY_RATE, MEMORY_TOKEN_BUDGET,
-    MEMORY_WEIGHT_THRESHOLD, SEMANTIC_DEDUP_THRESHOLD, SEMANTIC_DEDUP_MIN_WORDS,
-    MEMORY_TURN_DECAY_RATE
-)
-
-# Re-export for backward compatibility with tests
-def _get_embedding_model():
-    from src.core.services.grounding_service import _get_shared_embedding_model
-    return _get_shared_embedding_model()
+from src.core.config import MEMORY_TOKEN_BUDGET, TOKENIZER_ENCODING
 
 logger = logging.getLogger("RAG.Memory")
-tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Computes cosine similarity between two vectors."""
-    if a is None or b is None:
-        return 0.0
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return float(np.dot(a, b) / (norm_a * norm_b))
-
-def _encode_text(text: str) -> np.ndarray:
-    """Encodes text to embedding using shared model."""
-    from src.core.services.grounding_service import _get_shared_embedding_model
-    return _get_shared_embedding_model().encode(text, normalize_embeddings=True)
-
-
-class MemoryEntry:
-    """
-    Represents one message in the conversation.
-    
-    Each time you or the AI says something, we store it here. The entry tracks:
-    - What was said (text)
-    - Who said it (role: 'user' or 'assistant')
-    - How important it is (importance - helps decide what to keep)
-    - When it was last mentioned (last_seen - used for forgetting old info)
-    - A mathematical fingerprint for finding similar messages (embedding)
-    """
-
-    def __init__(self, text: str, importance: float = 1.0, role: str = "user", turn_count: int = 0):
-        self.text = text
-        self.base_importance = importance
-        self.role = role
-        self.last_seen = datetime.now()
-        self.turn_count = turn_count  # Issue #10: Track interaction turn number
-        self._embedding: Optional[np.ndarray] = None
-
-    @property
-    def embedding(self) -> np.ndarray:
-        if self._embedding is None:
-            self._embedding = _encode_text(self.text)
-        return self._embedding
-
-    def current_weight(self, decay_rate: float = MEMORY_TURN_DECAY_RATE, current_turn: int = 0) -> float:
-        """
-        How relevant this memory is right now.
-        
-        Issue #10: Uses interaction-turn based decay instead of wall-clock time.
-        Memories decay based on how many conversation turns have passed since
-        they were last seen, not how many hours. This means a user can take a
-        24-hour break without losing important context.
-        """
-        turns_elapsed = max(0, current_turn - self.turn_count)
-        return self.base_importance * np.exp(-decay_rate * turns_elapsed)
-
-    def touch(self):
-        """Resets the access timer to the current time."""
-        self.last_seen = datetime.now()
+# Shared store instance — one store per process, namespaced by session
+_store = InMemoryStore()
 
 
 class ConversationMemory:
     """
-    Manages conversation history with smart forgetting.
-    
-    This class holds all the messages in your current conversation. It automatically
-    removes old messages that have become "faded" (less important), keeping your
-    context focused on recent and relevant discussion while staying within token limits.
-    
-    Args:
-        decay_rate: How quickly memories fade (higher = forget faster)
-        max_tokens: Maximum space allocated for memory in the AI's context
+    Manages conversation history for a single session using LangGraph InMemoryStore.
+
+    Provides the same public interface as before:
+    - add(text, importance, role): Add a turn to memory
+    - get_active_context(): Retrieve the formatted context string
+
+    Deduplication is handled by namespace+key scoping in the store.
+    Token budgeting uses tiktoken for backward compatibility.
     """
 
-    def __init__(self, decay_rate: float = MEMORY_TURN_DECAY_RATE, max_tokens: int = MEMORY_TOKEN_BUDGET):
-        self.entries: List[MemoryEntry] = []
-        self.decay_rate = decay_rate
-        self.max_tokens = max_tokens
-        self._turn_counter: int = 0  # Issue #10: Global interaction turn counter
+    def __init__(self, session_id: str = None, max_tokens: int = MEMORY_TOKEN_BUDGET):
+        import uuid
+        actual_session_id = session_id or f"default_{uuid.uuid4().hex[:8]}"
+        self._session_id = actual_session_id
+        self._namespace = ("memory", actual_session_id)
+        self._turn_counter = 0
+        self._max_tokens = max_tokens
+        logger.debug(f"ConversationMemory initialised for session '{actual_session_id}'")
 
-    def add(self, text: str, importance: float = 1.0, role: str = "user"):
+    def add(self, text: str, importance: float = 1.0, role: str = "user") -> None:
         """
-        Adds a turn to memory. If semantically similar text exists, resets its timer.
-        Uses embedding-based cosine similarity for semantic deduplication.
+        Adds a turn to memory. Duplicate texts (same role+content) are silently ignored
+        via deterministic key generation.
         """
-        # Issue #10: Increment turn counter on each add
         self._turn_counter += 1
-        word_count = len(text.split())
+        # Deterministic key: role + hash of text prevents storing exact duplicates
+        import hashlib
+        key = f"{role}_{hashlib.md5(text.encode()).hexdigest()[:12]}"
+        _store.put(
+            self._namespace,
+            key,
+            {
+                "text": text,
+                "role": role,
+                "importance": importance,
+                "turn": self._turn_counter,
+            },
+        )
+        logger.debug(f"Memory stored: role={role}, turn={self._turn_counter}, key={key}")
 
-        # For longer texts, use semantic similarity
-        if word_count >= SEMANTIC_DEDUP_MIN_WORDS:
-            try:
-                new_embedding = _encode_text(text)
-                for existing in self.entries:
-                    existing_embedding = existing.embedding
-                    similarity = _cosine_similarity(existing_embedding, new_embedding)
-                    if similarity > SEMANTIC_DEDUP_THRESHOLD:
-                        logger.debug(f"Semantic deduplicating {role} entry (Similarity: {similarity:.2f}).")
-                        existing.touch()
-                        existing.turn_count = self._turn_counter  # Refresh turn stamp
-                        existing.base_importance = max(existing.base_importance, importance)
-                        return
-            except Exception as e:
-                logger.warning(f"Semantic deduplication failed, falling back to lexical: {e}")
+    @property
+    def max_tokens(self) -> int:
+        return self._max_tokens
 
-        # Fallback to lexical Jaccard for short texts or errors
-        for existing in self.entries:
-            overlap = self._text_overlap(existing.text, text)
-            if overlap > 0.7:
-                logger.debug(f"Lexical deduplicating {role} entry (Overlap: {overlap:.2f}).")
-                existing.touch()
-                existing.turn_count = self._turn_counter  # Refresh turn stamp
-                existing.base_importance = max(existing.base_importance, importance)
-                return
+    @property
+    def entries(self) -> list['MemoryEntry']:
+        items = _store.search(self._namespace, limit=10000)
+        sorted_items = sorted(items, key=lambda x: x.value.get("turn", 0))
+        return [
+            MemoryEntry(
+                text=i.value.get("text", ""),
+                importance=i.value.get("importance", 1.0),
+                role=i.value.get("role", "user"),
+                turn_count=i.value.get("turn", 0),
+            )
+            for i in sorted_items
+        ]
 
-        logger.debug(f"Adding new {role} entry. Total active: {len(self.entries) + 1}")
-        self.entries.append(MemoryEntry(text, importance, role, turn_count=self._turn_counter))
+    @entries.setter
+    def entries(self, value: list['MemoryEntry']):
+        try:
+            items = _store.search(self._namespace, limit=10000)
+            for item in items:
+                _store.delete(self._namespace, item.key)
+        except Exception as e:
+            logger.warning(f"Failed to clear store during prune: {e}")
 
-    @staticmethod
-    def _text_overlap(a: str, b: str) -> float:
-        """Calculates Jaccard similarity between two strings (fallback for short texts)."""
-        set_a = set(re.findall(r'\w+', a.lower()))
-        set_b = set(re.findall(r'\w+', b.lower()))
-        if not set_a or not set_b:
-            return 0.0
-        return len(set_a & set_b) / len(set_a | set_b)
+        max_turn = 0
+        for entry in value:
+            if entry.turn_count > max_turn:
+                max_turn = entry.turn_count
+            import hashlib
+            key = f"{entry.role}_{hashlib.md5(entry.text.encode()).hexdigest()[:12]}"
+            _store.put(
+                self._namespace,
+                key,
+                {
+                    "text": entry.text,
+                    "role": entry.role,
+                    "importance": entry.base_importance,
+                    "turn": entry.turn_count,
+                },
+            )
+        if max_turn > 0:
+            self._turn_counter = max_turn
 
     def get_active_context(self) -> str:
         """
-        Retrieves top relevant memories that haven't 'faded' (weight > threshold),
-        and formats them in chronological order.
+        Retrieves all stored memory items, sorts by turn order descending (newest first),
+        and returns a formatted string within the token budget.
         """
         t_start = time.time()
-        indexed_entries = list(enumerate(self.entries))
+        try:
+            import tiktoken
+            tokenizer = tiktoken.get_encoding(TOKENIZER_ENCODING)
+        except Exception:
+            tokenizer = None
 
-        active = [
-            (idx, e) for idx, e in indexed_entries 
-            if e.current_weight(self.decay_rate, self._turn_counter) > MEMORY_WEIGHT_THRESHOLD
-        ]
+        try:
+            items = _store.search(self._namespace, limit=10000)
+        except Exception as e:
+            logger.warning(f"Memory store search failed: {e}")
+            return ""
 
-        active.sort(key=lambda x: x[1].current_weight(self.decay_rate, self._turn_counter), reverse=True)
+        # Sort by turn number descending to prioritize recent turns
+        entries = sorted(
+            [i.value for i in items],
+            key=lambda x: x.get("turn", 0),
+            reverse=True,
+        )
 
-        selected_indexed = []
+        from src.core.config import MEMORY_TURN_DECAY_RATE, MEMORY_WEIGHT_THRESHOLD
+
+        context_parts = []
         total_tokens = 0
-        for idx, entry in active:
-            entry_text = f"[{entry.role}]: {entry.text}\n"
-            entry_tokens = len(tokenizer.encode(entry_text))
-            if total_tokens + entry_tokens < self.max_tokens:
-                selected_indexed.append((idx, entry_text))
-                total_tokens += entry_tokens
-            else:
-                break
+        for entry in entries:
+            # Apply turn-based importance decay
+            entry_turn = entry.get("turn", 0)
+            importance = entry.get("importance", 1.0)
+            age = max(0, self._turn_counter - entry_turn)
+            weight = importance * ((1.0 - MEMORY_TURN_DECAY_RATE) ** age)
+            
+            if weight < MEMORY_WEIGHT_THRESHOLD:
+                continue
 
-        selected_indexed.sort(key=lambda x: x[0])
-        context_parts = [text for idx, text in selected_indexed]
+            line = f"[{entry.get('role', 'user')}]: {entry.get('text', '')}\n"
+            if tokenizer:
+                line_tokens = len(tokenizer.encode(line))
+                if total_tokens + line_tokens > self._max_tokens:
+                    break
+                total_tokens += line_tokens
+            context_parts.insert(0, line)  # Prepend to restore chronological order
 
         t_ms = (time.time() - t_start) * 1000
-        logger.info(f"Extracted context: {len(context_parts)}/{len(self.entries)} entries ({total_tokens} tokens) in {t_ms:.1f}ms")
+        logger.info(
+            f"Extracted context: {len(context_parts)}/{len(entries)} entries "
+            f"({total_tokens} tokens) in {t_ms:.1f}ms"
+        )
         return "".join(context_parts)
+
+
+# Backward-compat: MemoryEntry is no longer used internally but kept as a stub
+# so any code that imports it doesn't crash.
+class MemoryEntry:
+    """Stub preserved for backward compatibility. Not used by ConversationMemory."""
+    def __init__(self, text: str, importance: float = 1.0, role: str = "user", turn_count: int = 0):
+        self.text = text
+        self.base_importance = importance
+        self.role = role
+        self.turn_count = turn_count

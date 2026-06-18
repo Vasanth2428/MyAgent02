@@ -2,6 +2,44 @@ import contextvars
 import logging
 import logging.handlers
 import os
+import builtins
+import sys
+
+_original_print = builtins.print
+
+def safe_print(*args, **kwargs):
+    try:
+        _original_print(*args, **kwargs)
+    except UnicodeEncodeError:
+        file = kwargs.get('file', sys.stdout)
+        if file is None:
+            file = sys.stdout
+        encoding = getattr(file, 'encoding', None) or 'utf-8'
+        sep = kwargs.get('sep', ' ')
+        end = kwargs.get('end', '\n')
+        
+        # Convert all arguments to string and join them
+        text = sep.join(map(str, args))
+        try:
+            # Encode with replace and decode back to string
+            safe_text = text.encode(encoding, errors='replace').decode(encoding)
+            new_kwargs = kwargs.copy()
+            new_kwargs.pop('sep', None)
+            new_kwargs.pop('end', None)
+            _original_print(safe_text, sep='', end=end, **new_kwargs)
+        except Exception:
+            # Fallback to ascii replacement if stream encoding fails
+            try:
+                safe_text = text.encode('ascii', errors='replace').decode('ascii')
+                new_kwargs = kwargs.copy()
+                new_kwargs.pop('sep', None)
+                new_kwargs.pop('end', None)
+                _original_print(safe_text, sep='', end=end, **new_kwargs)
+            except Exception:
+                pass
+
+builtins.print = safe_print
+
 
 session_id_var = contextvars.ContextVar("session_id", default=None)
 

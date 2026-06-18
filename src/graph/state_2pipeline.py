@@ -82,6 +82,7 @@ class AgentState(TypedDict):
     current_task: str
     steps_remaining: int
     plan: List[str]
+    completed_tasks: List[str]  # Fingerprints of tasks already dispatched (worker:task_hash)
     worker_complete: Annotated[Dict[str, bool], merge_dicts]
     retry_counter: int
     critic_retry_count: int

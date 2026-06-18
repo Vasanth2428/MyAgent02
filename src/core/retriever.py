@@ -23,7 +23,10 @@ from weaviate.classes.init import Auth
 from typing import List, Dict, Optional, Tuple, Any
 import weaviate.exceptions
 
-from src.core.config import EMBEDDING_MODEL, HYBRID_ALPHA_DEFAULT, HYBRID_ALPHA_KEYWORD
+from src.core.config import HYBRID_ALPHA_DEFAULT, HYBRID_ALPHA_KEYWORD
+
+# HF API key enables server-side vectorization via text2vec-huggingface.
+_HF_API_KEY = os.getenv("HF_API_KEY", "")
 
 logger = logging.getLogger("RAG.Retriever")
 
@@ -58,7 +61,12 @@ class WeaviateRetriever:
         if getattr(self, "_initialized", False):
             return
         self._initialized = True
-        self.url = os.getenv("WEAVIATE_URL")
+        url = os.getenv("WEAVIATE_URL", "")
+        if url.startswith("grpc-"):
+            url = url[5:]
+        if url and not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
+        self.url = url
         self.api_key = os.getenv("WEAVIATE_API_KEY")
         self.client = None
         self.collection = None
@@ -67,6 +75,12 @@ class WeaviateRetriever:
         config = wvc.init.AdditionalConfig(
             timeout=wvc.init.Timeout(init=60, query=120, insert=120)
         )
+
+        # Pass HF API key as a header so Weaviate Cloud can call the HF Inference API
+        hf_headers = {}
+        if _HF_API_KEY:
+            hf_headers["X-HuggingFace-Api-Key"] = _HF_API_KEY
+        logger.info("Using text2vec-huggingface server-side vectorizer.")
 
         from src.core.retry import retry
 
@@ -77,11 +91,42 @@ class WeaviateRetriever:
             logger_name="RAG.Retriever"
         )
         def _connect():
-            return weaviate.connect_to_weaviate_cloud(
-                cluster_url=self.url,
-                auth_credentials=Auth.api_key(self.api_key),
-                additional_config=config
-            )
+            clean_url = self.url
+            if "://" in clean_url:
+                clean_url = clean_url.split("://", 1)[1]
+            
+            # Extract http and grpc hosts
+            if clean_url.startswith("grpc-"):
+                grpc_host = clean_url
+                http_host = clean_url[5:]
+            else:
+                http_host = clean_url
+                grpc_host = "grpc-" + clean_url
+                
+            if ":" in http_host:
+                http_host = http_host.split(":", 1)[0]
+            if ":" in grpc_host:
+                grpc_host = grpc_host.split(":", 1)[0]
+                
+            if "weaviate.cloud" in clean_url or "weaviate.network" in clean_url:
+                return weaviate.connect_to_custom(
+                    http_host=http_host,
+                    http_port=443,
+                    http_secure=True,
+                    grpc_host=grpc_host,
+                    grpc_port=443,
+                    grpc_secure=True,
+                    auth_credentials=Auth.api_key(self.api_key),
+                    headers=hf_headers,
+                    additional_config=config
+                )
+            else:
+                return weaviate.connect_to_weaviate_cloud(
+                    cluster_url=self.url,
+                    auth_credentials=Auth.api_key(self.api_key),
+                    headers=hf_headers,
+                    additional_config=config
+                )
 
         try:
             self.client = _connect()
@@ -95,10 +140,14 @@ class WeaviateRetriever:
 
         if self.client and self._connected:
             if not self.client.collections.exists("RAGKnowledge"):
-                logger.info("Initializing 'RAGKnowledge' collection...")
+                logger.info("Initializing 'RAGKnowledge' collection with text2vec-huggingface...")
                 self.client.collections.create(
                     name="RAGKnowledge",
-                    vector_config=wvc.config.Configure.Vectors.self_provided(),
+                    vectorizer_config=wvc.config.Configure.Vectorizer.text2vec_huggingface(
+                        model="sentence-transformers/all-MiniLM-L6-v2",
+                        vectorize_collection_name=False,
+                    ),
+                    vector_index_config=wvc.config.Configure.VectorIndex.hfresh(),
                     properties=[
                         wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="tags", data_type=wvc.config.DataType.TEXT_ARRAY),
@@ -106,28 +155,17 @@ class WeaviateRetriever:
                         wvc.config.Property(name="content_hash", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="upload_timestamp", data_type=wvc.config.DataType.NUMBER),
                         wvc.config.Property(name="document_id", data_type=wvc.config.DataType.TEXT),
-                    ]
-                )
-
-            if not self.client.collections.exists("RAGCode"):
-                logger.info("Initializing 'RAGCode' collection...")
-                self.client.collections.create(
-                    name="RAGCode",
-                    vector_config=wvc.config.Configure.Vectors.self_provided(),
-                    properties=[
-                        wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="symbol_name", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="symbol_type", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="filepath", data_type=wvc.config.DataType.TEXT),
                         wvc.config.Property(name="start_line", data_type=wvc.config.DataType.NUMBER),
                         wvc.config.Property(name="end_line", data_type=wvc.config.DataType.NUMBER),
-                        wvc.config.Property(name="source", data_type=wvc.config.DataType.TEXT),
-                        wvc.config.Property(name="upload_timestamp", data_type=wvc.config.DataType.NUMBER),
+                        wvc.config.Property(name="is_code", data_type=wvc.config.DataType.BOOL),
                     ]
                 )
 
             self.collection = self.client.collections.get("RAGKnowledge")
-            self.code_collection = self.client.collections.get("RAGCode")
+            self.code_collection = self.client.collections.get("RAGKnowledge")
 
         self.local_docs = []
         self.local_code_chunks = []
@@ -151,13 +189,7 @@ class WeaviateRetriever:
         except Exception as e:
             logger.warning(f"Failed to load local code chunks from persistent storage: {e}")
 
-    def _get_embedding_model(self):
-        from src.core.services.grounding_service import _get_shared_embedding_model
-        return _get_shared_embedding_model()
 
-    @property
-    def embedding_model(self):
-        return self._get_embedding_model()
 
     def execute_with_retry(self, func, *args, **kwargs):
         """
@@ -204,14 +236,8 @@ class WeaviateRetriever:
         import hashlib
         content_hash = hashlib.sha256(",".join(docs).encode()).hexdigest()[:16]
 
-        embeddings = None
-        try:
-            embeddings = self.embedding_model.encode(docs)
-        except Exception as e:
-            logger.warning(f"Could not generate embeddings for document: {e}")
-
         t_embed = time.time()
-        
+
         # Enhanced properties with lifecycle metadata
         doc_upload_time = time.time()
         indexed_uuids = []
@@ -222,9 +248,9 @@ class WeaviateRetriever:
                 doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
             else:
                 doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, doc))
-            
+
             indexed_uuids.append(doc_id)
-            
+
             self.local_docs.append({
                 "text": doc,
                 "source": source,
@@ -232,7 +258,8 @@ class WeaviateRetriever:
                 "document_id": document_id or doc_id,
                 "content_hash": content_hash,
                 "upload_timestamp": doc_upload_time,
-                "vector": embeddings[i].tolist() if (embeddings is not None and hasattr(embeddings[i], "tolist")) else (embeddings[i] if embeddings is not None else None)
+                "is_code": False,
+                "vector": None
             })
 
         # Save to local persistent storage
@@ -254,19 +281,15 @@ class WeaviateRetriever:
                 for i, doc in enumerate(docs):
                     doc_uuid = uuid.UUID(indexed_uuids[i])
                     properties = {
-                        "text": doc, 
-                        "tags": tags or [], 
+                        "text": doc,
+                        "tags": tags or [],
                         "source": source,
                         "content_hash": content_hash,
                         "upload_timestamp": doc_upload_time,
                         "document_id": document_id or indexed_uuids[i],
+                        "is_code": False,
                     }
-                    
-                    batch.add_object(
-                        properties=properties,
-                        vector=embeddings[i].tolist() if (embeddings is not None and hasattr(embeddings[i], "tolist")) else (embeddings[i] if embeddings is not None else None),
-                        uuid=doc_uuid
-                    )
+                    batch.add_object(properties=properties, uuid=doc_uuid)
                 failed = self.collection.batch.failed_objects
                 if failed:
                     raise weaviate.exceptions.WeaviateQueryError(
@@ -278,7 +301,7 @@ class WeaviateRetriever:
         t_batch = time.time()
         logger.info(
             f"Indexed {len(docs)} chunks from '{source}' (doc_id={document_id}) in {(t_batch - t_start)*1000:.1f}ms "
-            f"(Embed: {(t_embed - t_start)*1000:.1f}ms, Insert: {(t_batch - t_embed)*1000:.1f}ms)"
+            f"(Insert: {(t_batch - t_embed)*1000:.1f}ms)"
         )
         return indexed_uuids
 
@@ -299,34 +322,18 @@ class WeaviateRetriever:
             Tuple of (results, embed_latency_ms, db_search_latency_ms)
         """
         if not self._connected:
-            logger.warning(f"Weaviate not connected - using local fallback search")
-            import numpy as np
-            
+            logger.warning("Weaviate not connected - using local keyword-only fallback search (semantic scoring unavailable in offline mode)")
             t_start = time.time()
-            query_vector = None
-            try:
-                query_vector = self.embedding_model.encode(query)
-            except Exception as e:
-                logger.warning(f"Failed to encode query, falling back to simple keyword search: {e}")
-
-            t_embed = time.time()
             results = []
             
+            # Keyword BM25-like matching
+            keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
             for doc in self.local_docs:
+                if doc.get("is_code", False):
+                    continue
                 if source_filter and doc["source"] != source_filter:
                     continue
                 
-                # Semantic Similarity (Cosine)
-                semantic_score = 0.0
-                if query_vector is not None and doc.get("vector") is not None:
-                    doc_vector = np.array(doc["vector"])
-                    norm_q = np.linalg.norm(query_vector)
-                    norm_d = np.linalg.norm(doc_vector)
-                    if norm_q > 0 and norm_d > 0:
-                        semantic_score = float(np.dot(query_vector, doc_vector) / (norm_q * norm_d))
-
-                # Keyword BM25-like matching
-                keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
                 keyword_score = 0.0
                 text_lower = doc["text"].lower()
                 for kw in keywords:
@@ -334,34 +341,27 @@ class WeaviateRetriever:
                         keyword_score += 1.0
                 keyword_score = keyword_score / (len(keywords) if keywords else 1)
 
-                # Combine using dynamically calculated alpha
-                alpha = self._detect_alpha(query)
-                if doc.get("vector") is not None:
-                    # Hybrid score: weight vectors and keywords
-                    combined_score = alpha * semantic_score + (1.0 - alpha) * keyword_score
-                else:
-                    combined_score = keyword_score
-
                 results.append({
                     "text": doc["text"],
                     "source": doc["source"],
                     "tags": doc["tags"],
-                    "score": combined_score,
+                    "score": keyword_score,
                     "content_hash": doc.get("content_hash", ""),
                     "document_id": doc["document_id"]
                 })
             
             results.sort(key=lambda x: x["score"], reverse=True)
             t_search = time.time()
-            embed_latency_ms = (t_embed - t_start) * 1000
-            search_latency_ms = (t_search - t_embed) * 1000
+            embed_latency_ms = 0.0
+            search_latency_ms = (t_search - t_start) * 1000
             return results[:top_k], embed_latency_ms, search_latency_ms
 
         t_start = time.time()
-        query_vector = self.embedding_model.encode(query).tolist()
-        t_embed = time.time()
+        embed_latency_ms = 0.0
 
-        filters = wvc.query.Filter.by_property("source").equal(source_filter) if source_filter else None
+        filters = wvc.query.Filter.by_property("is_code").equal(False)
+        if source_filter:
+            filters = filters & wvc.query.Filter.by_property("source").equal(source_filter)
 
         alpha = self._detect_alpha(query)
         self.alpha = alpha
@@ -369,7 +369,7 @@ class WeaviateRetriever:
         def _query_db():
             return self.collection.query.hybrid(
                 query=query,
-                vector=query_vector,
+                vector=None,  # Weaviate auto-embeds query server-side via HF vectorizer
                 alpha=alpha,
                 limit=top_k,
                 filters=filters,
@@ -380,8 +380,7 @@ class WeaviateRetriever:
         response = self.execute_with_retry(_query_db)
 
         t_search = time.time()
-        embed_latency_ms = (t_embed - t_start) * 1000
-        search_latency_ms = (t_search - t_embed) * 1000
+        search_latency_ms = (t_search - t_start) * 1000
 
         res = [{
             "text": obj.properties["text"],
@@ -414,18 +413,10 @@ class WeaviateRetriever:
         """
         Indexes code chunks into Weaviate.
         """
-        texts = [chunk["text"] for chunk in chunks]
-        embeddings = None
-        try:
-            embeddings = self.embedding_model.encode(texts)
-        except Exception as e:
-            logger.warning(f"Could not generate embeddings for code chunks: {e}")
-
         doc_upload_time = time.time()
         indexed_uuids = []
 
         for i, chunk in enumerate(chunks):
-            # Deterministic UUID based on content path and text
             chunk_id = f"{chunk['filepath']}_{chunk.get('symbol_name', '')}_{i}"
             doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
             indexed_uuids.append(doc_id)
@@ -439,7 +430,8 @@ class WeaviateRetriever:
                 "end_line": int(chunk.get("end_line", 1)),
                 "source": chunk.get("source") or "repo",
                 "upload_timestamp": doc_upload_time,
-                "vector": embeddings[i].tolist() if embeddings is not None else None
+                "is_code": True,
+                "vector": None
             }
             self.local_code_chunks.append(local_chunk)
 
@@ -470,12 +462,9 @@ class WeaviateRetriever:
                         "end_line": int(chunk.get("end_line", 1)),
                         "source": chunk.get("source") or "repo",
                         "upload_timestamp": doc_upload_time,
+                        "is_code": True,
                     }
-                    batch.add_object(
-                        properties=properties,
-                        vector=embeddings[i].tolist() if embeddings is not None else None,
-                        uuid=doc_uuid
-                    )
+                    batch.add_object(properties=properties, uuid=doc_uuid)
         self.execute_with_retry(_batch_insert)
         return indexed_uuids
 
@@ -484,28 +473,12 @@ class WeaviateRetriever:
         Searches the RAGCode collection using hybrid search.
         """
         if not self._connected or not self.client or not self.code_collection:
-            logger.warning("Weaviate not connected - using local fallback search for code chunks")
-            import numpy as np
-
-            query_vector = None
-            try:
-                query_vector = self.embedding_model.encode(query)
-            except Exception as e:
-                logger.warning(f"Failed to encode query, falling back to simple keyword search: {e}")
+            logger.warning("Weaviate not connected - using local keyword-only fallback search for code chunks (semantic scoring unavailable in offline mode)")
 
             results = []
+            keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
             for chunk in self.local_code_chunks:
-                # Semantic Similarity (Cosine)
-                semantic_score = 0.0
-                if query_vector is not None and chunk.get("vector") is not None:
-                    doc_vector = np.array(chunk["vector"])
-                    norm_q = np.linalg.norm(query_vector)
-                    norm_d = np.linalg.norm(doc_vector)
-                    if norm_q > 0 and norm_d > 0:
-                        semantic_score = float(np.dot(query_vector, doc_vector) / (norm_q * norm_d))
-
                 # Keyword matching
-                keywords = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 3]
                 keyword_score = 0.0
                 text_lower = chunk["text"].lower()
                 for kw in keywords:
@@ -513,26 +486,21 @@ class WeaviateRetriever:
                         keyword_score += 1.0
                 keyword_score = keyword_score / (len(keywords) if keywords else 1)
 
-                if chunk.get("vector") is not None:
-                    combined_score = 0.5 * semantic_score + 0.5 * keyword_score
-                else:
-                    combined_score = keyword_score
-
                 results.append({
                     "chunk": chunk,
-                    "score": combined_score
+                    "score": keyword_score
                 })
 
             results.sort(key=lambda x: x["score"], reverse=True)
             return [item["chunk"] for item in results[:limit]]
 
-        query_vector = self.embedding_model.encode([query])[0].tolist()
         def _query_db():
             return self.code_collection.query.hybrid(
                 query=query,
-                vector=query_vector,
+                vector=None,  # Weaviate auto-embeds the query server-side via HF vectorizer
                 alpha=HYBRID_ALPHA_DEFAULT,
                 limit=limit,
+                filters=wvc.query.Filter.by_property("is_code").equal(True),
                 return_properties=["text", "symbol_name", "symbol_type", "filepath", "start_line", "end_line", "source"]
             )
         response = self.execute_with_retry(_query_db)

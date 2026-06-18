@@ -21,7 +21,7 @@ LLM_TEMPERATURE = 0.1
 CONTEXT_WINDOW_LIMIT = 131072
 
 # --- Embedding ---
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# EMBEDDING_MODEL = "all-MiniLM-L6-v2" (No longer used directly; server-side text2vec-huggingface is used instead)
 
 # --- Reranker ---
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"

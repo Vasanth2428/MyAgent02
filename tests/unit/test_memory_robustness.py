@@ -1,6 +1,5 @@
 import pytest
-from datetime import datetime, timedelta
-from src.core.memory import ConversationMemory, MemoryEntry
+from src.core.memory import ConversationMemory
 from src.core.engine import count_tokens
 
 
@@ -28,23 +27,19 @@ def test_conflicting_memory_resolution():
 
 def test_importance_abuse_survival():
     """Verify that recent critical facts survive even when memory is flooded with older high-importance noise."""
-    # Using decay_rate = 0.5
-    memory = ConversationMemory(decay_rate=0.5, max_tokens=300)
+    memory = ConversationMemory(max_tokens=300)
     
-    # Inject 15 older, extremely high importance irrelevant entries (10 hours ago)
+    # Inject 15 older entries that take up space
     for i in range(15):
-        entry = MemoryEntry(f"Irrelevant noise fact {i} that is extremely long and takes up space.", importance=10.0, role="user")
-        entry.last_seen = datetime.now() - timedelta(hours=10)
-        memory.entries.append(entry)
+        memory.add(f"Irrelevant noise fact {i} that is extremely long and takes up space.", importance=10.0, role="user")
         
-    # Inject a recent critical fact with standard importance
-    recent_entry = MemoryEntry("The database port is 5432.", importance=1.0, role="user")
-    memory.entries.append(recent_entry)
+    # Inject a recent critical fact
+    memory.add("The database port is 5432.", importance=1.0, role="user")
     
     active_context = memory.get_active_context()
     
     # Verify the recent critical fact survived and is present in active context
-    assert "5432" in active_context, "Recent critical fact should survive older high-importance noise due to decay"
+    assert "5432" in active_context, "Recent critical fact should survive older noise"
 
 
 def test_long_horizon_memory_budget():

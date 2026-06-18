@@ -37,7 +37,7 @@ class MemoryService:
         """
         if session_id not in self.memories:
             logger.info(f"Restoring context for session: {session_id}")
-            memory = ConversationMemory()
+            memory = ConversationMemory(session_id=session_id)
             for entry in self.persistent_store.get_history(session_id):
                 memory.add(entry["text"], importance=entry["importance"], role=entry["role"])
             self.memories[session_id] = memory

@@ -48,11 +48,19 @@ Available Workers:
 
 Your duties:
 1. Construct or update a step-by-step plan (max 8 steps per turn) to answer the user query.
-2. Evaluate the 'scratchpad', 'worker_summaries', and 'file_status_flags' to pick the safest next move.
-3. Determine the next step. If all research steps are resolved, check if the user requested a report/summary document. If yes, route to the report_worker. If no report is needed, route to the synthesizer.
+2. Evaluate the 'scratchpad', 'worker_summaries', 'file_status_flags', and especially 'Completed Tasks' to pick the safest next move.
+3. Determine the next step. If all research steps are resolved, check if the user explicitly requested a report/summary document. If yes, route to the report_worker ONCE. If no report is needed, route to the synthesizer.
 4. Otherwise, select the next appropriate worker. For code analysis tasks, route to coding_worker for analysis then code_critic_worker for validation.
 5. Write the updated plan (max 8 steps), next_agent, and current_task in the JSON response.
+
+CRITICAL DEDUPLICATION RULES (you MUST follow these before every routing decision):
+- Check the 'Completed Tasks' list in the blackboard carefully. If a task fingerprint matching your intended next_agent + task already appears there, DO NOT route to that worker again.
+- If the scratchpad or worker summaries already contain results from a worker for this session, do not re-run that same worker for the same sub-task.
+- If the coding_worker has already scaffolded a project (keyword 'scaffold' appears in completed tasks), route to coding_worker for CONTENT only — not scaffolding again.
+- If all planned steps are complete or covered by completed tasks, route DIRECTLY to 'synthesizer'. Do not route to 'report_worker' unless the user explicitly asked for a report.
+- Prefer 'synthesizer' over any looping back to workers when sufficient information is available.
 """
+
 
 
 class SupervisorDecision(BaseModel):
@@ -140,6 +148,7 @@ def supervisor_node(state: dict) -> dict:
     task_hashes = state.get("task_hashes") or []
     active_document_ids = state.get("active_document_ids") or []
     retry_counter = int(state.get("retry_counter") or 0)
+    completed_tasks = list(state.get("completed_tasks") or [])
     
     # Structured HITL handling - avoid parsing scratchpad text
     is_waiting = state.get("waiting_for_approval", False)
@@ -246,6 +255,7 @@ def supervisor_node(state: dict) -> dict:
             f"Task Hashes: {', '.join(task_hashes[:5]) or 'None'}",
             f"Retry Attempts: {retry_counter}",
             f"File Status Flags: {file_status_flags or 'None'}",
+            f"Completed Tasks (DO NOT re-assign these): {completed_tasks if completed_tasks else 'None'}",
             "Accumulated Findings (Scratchpad):",
             display_scratchpad if display_scratchpad else "(No findings yet)",
             "Worker Summaries:",
@@ -382,6 +392,24 @@ def supervisor_node(state: dict) -> dict:
         expansion_text = plan_expansion_match.group(1).strip()
         plan_out.extend([f"EXPANDED: {expansion_text}"])
     
+    # Build task fingerprint: worker:task_summary to detect duplicates next turn
+    import hashlib
+    task_fingerprint = None
+    if next_agent not in ("synthesizer", "FINISH") and current_task:
+        raw_fp = f"{next_agent}:{current_task[:120]}"
+        task_fingerprint = f"{next_agent}:{hashlib.md5(raw_fp.encode()).hexdigest()[:8]}"
+        # Duplicate guard: if we are about to route to the same worker+task, override to synthesizer
+        if task_fingerprint in completed_tasks:
+            logger.warning(f"[SUPERVISOR] Duplicate task fingerprint detected: {task_fingerprint}. Overriding next_agent to 'synthesizer'.")
+            print(f"[SUPERVISOR] Duplicate task blocked ({task_fingerprint}). Forcing synthesizer.")
+            next_agent = "synthesizer"
+            task_fingerprint = None  # Don't record synthesizer as a completed task fingerprint
+
+    # Track dispatched task in completed_tasks list
+    new_completed_tasks = list(completed_tasks)
+    if task_fingerprint and task_fingerprint not in new_completed_tasks:
+        new_completed_tasks.append(task_fingerprint)
+
     state_update = {
         "plan": plan_out,
         "next_agent": next_agent,
@@ -392,6 +420,7 @@ def supervisor_node(state: dict) -> dict:
         "worker_output_summaries": summaries,
         "worker_output_ids": worker_output_ids,
         "scratchpad_references": scratchpad_references,
+        "completed_tasks": new_completed_tasks,
     }
     
     state_update.update(state_update_overrides)

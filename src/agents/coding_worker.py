@@ -614,16 +614,13 @@ def coding_worker_node(state: dict) -> dict:
     if not is_compatible:
         rejection_msg = incompatibility_explanation or "I apologize, but I am strictly restricted to writing frontend code using the React framework and backend code in Python. I cannot assist with tasks outside of these capabilities."
         print(f"[CODING WORKER] Task rejected: {rejection_msg}")
-        return Command(
-            update={
-                "messages": [AIMessage(content=rejection_msg, name="coding_worker")],
-                "scratchpad": scratchpad + f"\n- [Coding Worker]: Rejected task - {rejection_msg}",
-                "worker_complete": {"coding_worker": True},
-                "worker_outputs": {"coding_worker": rejection_msg},
-                "worker_type": "coding_worker",
-            },
-            goto="supervisor_node",
-        )
+        return {
+            "messages": [AIMessage(content=rejection_msg, name="coding_worker")],
+            "scratchpad": scratchpad + f"\n- [Coding Worker]: Rejected task - {rejection_msg}",
+            "worker_complete": {"coding_worker": True},
+            "worker_outputs": {"coding_worker": rejection_msg},
+            "worker_type": "coding_worker",
+        }
         
     print(f"\n[CODING WORKER] Initiating coding task: '{target_instruction[:60]}...'")
     
@@ -700,6 +697,23 @@ def coding_worker_node(state: dict) -> dict:
         ]
         step = 0
         tool_calls_count = 0
+        
+        # Pre-check: List existing workspace contents so the LLM avoids duplicate scaffolding
+        try:
+            workspace_listing = _list_files(".")
+            if workspace_listing and workspace_listing.strip():
+                agent_messages.append(
+                    SystemMessage(
+                        content=(
+                            f"WORKSPACE PRE-CHECK (current contents of ./workspace):\n{workspace_listing}\n\n"
+                            "IMPORTANT: If a project directory already exists above (e.g. contains a package.json or vite.config.js), "
+                            "DO NOT scaffold a new React app. Instead, read the existing project and add/modify content inside it."
+                        )
+                    )
+                )
+                print(f"[CODING WORKER] Workspace pre-check injected ({len(workspace_listing)} chars).")
+        except Exception as e:
+            logger.warning(f"[CODING WORKER] Workspace pre-check failed: {e}")
     
     max_steps = 8
     max_tool_calls = 15
@@ -845,24 +859,21 @@ def coding_worker_node(state: dict) -> dict:
     # If blocked for approval, set the waiting_for_approval state
     waiting = blocked_for_approval is not None
     if waiting:
-        return Command(
-            update={
-                "messages": [AIMessage(content=observation, name="coding_worker")],
-                "scratchpad": scratchpad + f"\n- [Coding Worker]: Blocked awaiting approval for {blocked_for_approval[0]} on {blocked_for_approval[1]}",
-                "worker_complete": {"coding_worker": False},
-                "worker_outputs": {"coding_worker": observation},
-                "worker_type": "coding_worker",
-                "waiting_for_approval": True,
-                "approval_filepath": blocked_for_approval[1] if blocked_for_approval else "",
-                "approval_tool": blocked_for_approval[0] if blocked_for_approval else "",
-                "pending_file_approvals": state.get("pending_file_approvals", {}),
-                "coding_worker_messages": agent_messages,
-                "coding_worker_step": step,
-                "coding_worker_tool_calls_count": tool_calls_count,
-                "patch_is_verified": state.get("patch_is_verified", False),
-            },
-            goto="supervisor_node",
-        )
+        return {
+            "messages": [AIMessage(content=observation, name="coding_worker")],
+            "scratchpad": scratchpad + f"\n- [Coding Worker]: Blocked awaiting approval for {blocked_for_approval[0]} on {blocked_for_approval[1]}",
+            "worker_complete": {"coding_worker": False},
+            "worker_outputs": {"coding_worker": observation},
+            "worker_type": "coding_worker",
+            "waiting_for_approval": True,
+            "approval_filepath": blocked_for_approval[1] if blocked_for_approval else "",
+            "approval_tool": blocked_for_approval[0] if blocked_for_approval else "",
+            "pending_file_approvals": state.get("pending_file_approvals", {}),
+            "coding_worker_messages": agent_messages,
+            "coding_worker_step": step,
+            "coding_worker_tool_calls_count": tool_calls_count,
+            "patch_is_verified": state.get("patch_is_verified", False),
+        }
     
     return {
         "messages": [AIMessage(content=final_explanation, name="coding_worker")],

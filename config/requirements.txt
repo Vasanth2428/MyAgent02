@@ -4,9 +4,16 @@ langgraph-checkpoint-sqlite>=0.1.0
 langchain-core>=0.3.0
 langchain-openai>=0.2.0
 langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
 tavily-python>=0.5.0
 langsmith>=0.1.0
 python-dotenv>=1.0.0
+
+# Math evaluation (replaces custom AST visitor)
+simpleeval>=1.0.0
+
+# Reranking (replaces manual CrossEncoder + PyTorch)
+flashrank>=0.2.0
 
 # Tree-sitter for professional code parsing (upgrade from raw ast)
 tree-sitter>=0.21.0
