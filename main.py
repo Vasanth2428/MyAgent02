@@ -73,9 +73,6 @@ def _serialize_event(event):
 # Load environment variables from config directory
 load_dotenv(dotenv_path="config/.env", override=True)
 
-# Load environment variables before any local module imports
-load_dotenv(override=True)
-
 import uuid
 
 from src.core.config import CHUNK_SIZE, CHUNK_OVERLAP, PipelineConfig
@@ -273,18 +270,19 @@ class SessionLoggingMiddleware:
                     pass
 
                 # Replace receive so downstream handlers can still read the body
+                original_receive = receive
                 body_replayed = False
                 async def replay_receive():
                     nonlocal body_replayed
                     if not body_replayed:
                         body_replayed = True
                         return {"type": "http.request", "body": body, "more_body": False}
-                    # Subsequent calls return empty (Starlette caches after first read)
-                    return {"type": "http.request", "body": b"", "more_body": False}
+                    # Delegate subsequent calls to original receive channel to block correctly
+                    return await original_receive()
 
                 receive = replay_receive
 
-        token = session_id_var.set(session_id)
+            token = session_id_var.set(session_id)
         try:
             await self.app(scope, receive, send)
         finally:

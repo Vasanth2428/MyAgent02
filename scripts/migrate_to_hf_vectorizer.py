@@ -97,6 +97,13 @@ def main():
             grpc_host = grpc_host.split(":", 1)[0]
             
         if "weaviate.cloud" in clean_url or "weaviate.network" in clean_url:
+            client = weaviate.connect_to_weaviate_cloud(
+                cluster_url=WEAVIATE_URL,
+                auth_credentials=Auth.api_key(WEAVIATE_API_KEY),
+                headers=headers,
+                additional_config=config,
+            )
+        else:
             client = weaviate.connect_to_custom(
                 http_host=http_host,
                 http_port=443,
@@ -107,13 +114,6 @@ def main():
                 auth_credentials=Auth.api_key(WEAVIATE_API_KEY),
                 headers=headers,
                 additional_config=config
-            )
-        else:
-            client = weaviate.connect_to_weaviate_cloud(
-                cluster_url=WEAVIATE_URL,
-                auth_credentials=Auth.api_key(WEAVIATE_API_KEY),
-                headers=headers,
-                additional_config=config,
             )
         print("✅ Connected.")
     except Exception as e:

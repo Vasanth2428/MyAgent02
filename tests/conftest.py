@@ -7,18 +7,19 @@ import src.core.logging_setup
 
 # Mock FlashrankRerank to make unit tests fast, deterministic and 100% offline
 class MockFlashrankRerank:
-    def __init__(self, model_name=None, top_n=None):
+    def __init__(self, model=None, top_n=None):
         pass
 
     def compress_documents(self, documents, query):
+        import re
         # Heuristic scoring to satisfy tests
         def heuristic_score(doc_text):
             query_lower = query.lower()
             doc_lower = doc_text.lower()
             
-            # Simple keyword matching
-            query_words = set(query_lower.replace("?", "").replace(".", "").split())
-            doc_words = set(doc_lower.replace("?", "").replace(".", "").split())
+            # Use regex to find words (handles hyphens, punctuation, etc.)
+            query_words = set(re.findall(r'\w+', query_lower))
+            doc_words = set(re.findall(r'\w+', doc_lower))
             overlap = len(query_words & doc_words)
             score = overlap / max(len(query_words), 1)
 
@@ -73,5 +74,6 @@ class MockFlashrankRerank:
         return sorted(scored_docs, key=lambda d: d.metadata["relevance_score"], reverse=True)
 
 # Apply monkeypatching before tests run
-import src.core.reranker
-src.core.reranker._get_flashrank_reranker = lambda: MockFlashrankRerank()
+import sys
+import langchain_community.document_compressors
+langchain_community.document_compressors.FlashrankRerank = MockFlashrankRerank

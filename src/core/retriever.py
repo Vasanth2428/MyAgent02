@@ -109,6 +109,13 @@ class WeaviateRetriever:
                 grpc_host = grpc_host.split(":", 1)[0]
                 
             if "weaviate.cloud" in clean_url or "weaviate.network" in clean_url:
+                return weaviate.connect_to_weaviate_cloud(
+                    cluster_url=self.url,
+                    auth_credentials=Auth.api_key(self.api_key),
+                    headers=hf_headers,
+                    additional_config=config
+                )
+            else:
                 return weaviate.connect_to_custom(
                     http_host=http_host,
                     http_port=443,
@@ -116,13 +123,6 @@ class WeaviateRetriever:
                     grpc_host=grpc_host,
                     grpc_port=443,
                     grpc_secure=True,
-                    auth_credentials=Auth.api_key(self.api_key),
-                    headers=hf_headers,
-                    additional_config=config
-                )
-            else:
-                return weaviate.connect_to_weaviate_cloud(
-                    cluster_url=self.url,
                     auth_credentials=Auth.api_key(self.api_key),
                     headers=hf_headers,
                     additional_config=config
@@ -165,7 +165,10 @@ class WeaviateRetriever:
                 )
 
             self.collection = self.client.collections.get("RAGKnowledge")
-            self.code_collection = self.client.collections.get("RAGKnowledge")
+            if self.client.collections.exists("RAGCode"):
+                self.code_collection = self.client.collections.get("RAGCode")
+            else:
+                self.code_collection = self.collection  # Fallback to RAGKnowledge if RAGCode doesn't exist
 
         self.local_docs = []
         self.local_code_chunks = []
@@ -236,6 +239,10 @@ class WeaviateRetriever:
         import hashlib
         content_hash = hashlib.sha256(",".join(docs).encode()).hexdigest()[:16]
 
+        t_embed_start = time.time()
+        from src.core.services.grounding_service import _get_shared_embedding_model
+        embedding_model = _get_shared_embedding_model()
+        doc_vectors = embedding_model.encode(docs).tolist()
         t_embed = time.time()
 
         # Enhanced properties with lifecycle metadata
@@ -289,12 +296,13 @@ class WeaviateRetriever:
                         "document_id": document_id or indexed_uuids[i],
                         "is_code": False,
                     }
-                    batch.add_object(properties=properties, uuid=doc_uuid)
-                failed = self.collection.batch.failed_objects
-                if failed:
-                    raise weaviate.exceptions.WeaviateQueryError(
-                        f"Weaviate batch insert failed for {len(failed)} objects. First error: {failed[0].message}"
-                    )
+                    batch.add_object(properties=properties, uuid=doc_uuid, vector=doc_vectors[i])
+            failed = self.collection.batch.failed_objects
+            if failed:
+                raise weaviate.exceptions.WeaviateQueryError(
+                    "insert",
+                    f"Weaviate batch insert failed for {len(failed)} objects. First error: {failed[0].message}"
+                )
 
         self.execute_with_retry(_batch_insert)
 
@@ -357,7 +365,7 @@ class WeaviateRetriever:
             return results[:top_k], embed_latency_ms, search_latency_ms
 
         t_start = time.time()
-        embed_latency_ms = 0.0
+        t_embed = time.time()
 
         filters = wvc.query.Filter.by_property("is_code").equal(False)
         if source_filter:
@@ -366,11 +374,16 @@ class WeaviateRetriever:
         alpha = self._detect_alpha(query)
         self.alpha = alpha
 
+        # Use local embedding model for query vector (avoids server-side vectorization permissions)
+        t_embed_start = time.time()
+        from src.core.services.grounding_service import _get_shared_embedding_model
+        embedding_model = _get_shared_embedding_model()
+        query_vector = embedding_model.encode(query).tolist()
+        embed_latency_ms = (time.time() - t_embed_start) * 1000
+
         def _query_db():
-            return self.collection.query.hybrid(
-                query=query,
-                vector=None,  # Weaviate auto-embeds query server-side via HF vectorizer
-                alpha=alpha,
+            return self.collection.query.near_vector(
+                near_vector=query_vector,
                 limit=top_k,
                 filters=filters,
                 return_properties=["text", "tags", "source"],
@@ -435,6 +448,12 @@ class WeaviateRetriever:
             }
             self.local_code_chunks.append(local_chunk)
 
+        # Compute vectors for code chunks to avoid server-side vectorization
+        from src.core.services.grounding_service import _get_shared_embedding_model
+        embedding_model = _get_shared_embedding_model()
+        chunk_texts = [chunk["text"] for chunk in chunks]
+        chunk_vectors = embedding_model.encode(chunk_texts).tolist()
+
         # Save to local persistent storage
         try:
             os.makedirs("data", exist_ok=True)
@@ -464,7 +483,13 @@ class WeaviateRetriever:
                         "upload_timestamp": doc_upload_time,
                         "is_code": True,
                     }
-                    batch.add_object(properties=properties, uuid=doc_uuid)
+                    batch.add_object(properties=properties, uuid=doc_uuid, vector=chunk_vectors[i])
+            failed = self.code_collection.batch.failed_objects
+            if failed:
+                raise weaviate.exceptions.WeaviateQueryError(
+                    "insert",
+                    f"Weaviate batch insert failed for {len(failed)} objects. First error: {failed[0].message}"
+                )
         self.execute_with_retry(_batch_insert)
         return indexed_uuids
 
@@ -494,11 +519,14 @@ class WeaviateRetriever:
             results.sort(key=lambda x: x["score"], reverse=True)
             return [item["chunk"] for item in results[:limit]]
 
+        # Use local embedding model for query vector (avoids server-side vectorization permissions)
+        from src.core.services.grounding_service import _get_shared_embedding_model
+        embedding_model = _get_shared_embedding_model()
+        query_vector = embedding_model.encode(query).tolist()
+
         def _query_db():
-            return self.code_collection.query.hybrid(
-                query=query,
-                vector=None,  # Weaviate auto-embeds the query server-side via HF vectorizer
-                alpha=HYBRID_ALPHA_DEFAULT,
+            return self.code_collection.query.near_vector(
+                near_vector=query_vector,
                 limit=limit,
                 filters=wvc.query.Filter.by_property("is_code").equal(True),
                 return_properties=["text", "symbol_name", "symbol_type", "filepath", "start_line", "end_line", "source"]

@@ -18,24 +18,29 @@ from src.core.config import RERANKER_MODEL
 
 logger = logging.getLogger("RAG.Reranker")
 
+import threading
+
+_reranker_lock = threading.Lock()
 _reranker_instance = None
 
 
 def _get_flashrank_reranker():
     global _reranker_instance
     if _reranker_instance is None:
-        model_name = RERANKER_MODEL.split("/")[-1] if "/" in RERANKER_MODEL else RERANKER_MODEL
-        # Map config cross-encoder model to supported Flashrank models
-        if "minilm" in model_name.lower():
-            model_name = "ms-marco-MiniLM-L-12-v2"
-        elif "tinybert" in model_name.lower():
-            model_name = "ms-marco-TinyBERT-L-6-v2"
-        else:
-            model_name = "ms-marco-MultiBERT-L-12"
-            
-        logger.info(f"Lazy-loading FlashrankRerank (model: {model_name})")
-        from langchain_community.document_compressors import FlashrankRerank
-        _reranker_instance = FlashrankRerank(model=model_name, top_n=100)
+        with _reranker_lock:
+            if _reranker_instance is None:
+                model_name = RERANKER_MODEL.split("/")[-1] if "/" in RERANKER_MODEL else RERANKER_MODEL
+                # Map config cross-encoder model to supported Flashrank models
+                if "minilm" in model_name.lower():
+                    model_name = "ms-marco-MiniLM-L-12-v2"
+                elif "tinybert" in model_name.lower():
+                    model_name = "ms-marco-TinyBERT-L-6-v2"
+                else:
+                    model_name = "ms-marco-MultiBERT-L-12"
+                    
+                logger.info(f"Lazy-loading FlashrankRerank (model: {model_name})")
+                from langchain_community.document_compressors import FlashrankRerank
+                _reranker_instance = FlashrankRerank(model=model_name, top_n=100)
     return _reranker_instance
 
 

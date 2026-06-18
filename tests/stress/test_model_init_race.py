@@ -15,6 +15,7 @@ def test_model_initialization_race_condition():
     import sys
     
     # Reset the module-level state to test fresh initialization
+    _get_shared_embedding_model.__globals__['_embedding_model_instance'] = None
     if 'src.core.services.grounding_service' in sys.modules:
         del sys.modules['src.core.services.grounding_service']
     
@@ -50,6 +51,7 @@ def test_reranker_model_race_condition():
     import sys
     
     # Reset state
+    _get_flashrank_reranker.__globals__['_reranker_instance'] = None
     if 'src.core.reranker' in sys.modules:
         del sys.modules['src.core.reranker']
     
@@ -79,6 +81,7 @@ def test_cross_encoder_singleton_safety():
     import sys
     
     # Reset state
+    _get_flashrank_reranker.__globals__['_reranker_instance'] = None
     if 'src.core.reranker' in sys.modules:
         del sys.modules['src.core.reranker']
     
@@ -109,6 +112,7 @@ def test_embedding_model_singleton_safety():
     import sys
     
     # Reset state
+    _get_shared_embedding_model.__globals__['_embedding_model_instance'] = None
     if 'src.core.services.grounding_service' in sys.modules:
         del sys.modules['src.core.services.grounding_service']
     
