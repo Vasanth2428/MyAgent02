@@ -126,13 +126,30 @@ def test_symlink_traversal_mocked(monkeypatch):
 
 def test_package_json_blocks():
     assert _is_safe_path("package.json") is False
-    assert _is_safe_path("dir/package.json") is False
+    assert _is_safe_path("dir/package.json") is True
     assert _is_safe_path("dir/../package.json") is False
     
-    # Verify read/write functions reject package.json
+    # Verify read/write functions reject root package.json
     assert "violates safety" in read_files("package.json")
     assert "violates safety" in create_files("package.json", "{}")
     assert "violates safety" in modify_files("package.json", "a", "b")
+
+    # Verify read/write functions allow subdirectory package.json
+    new_pkg = "dir/package.json"
+    new_abs_pkg = os.path.join(WORKSPACE_ROOT, new_pkg)
+    try:
+        assert "Success" in create_files(new_pkg, "{}")
+        assert "Success" in modify_files(new_pkg, "{}", "{\"name\": \"test\"}")
+        assert "name" in read_files(new_pkg)
+    finally:
+        if os.path.exists(new_abs_pkg):
+            os.remove(new_abs_pkg)
+        dir_path = os.path.dirname(new_abs_pkg)
+        if os.path.exists(dir_path):
+            try:
+                os.rmdir(dir_path)
+            except Exception:
+                pass
 
 
 def test_command_injection_blocks():

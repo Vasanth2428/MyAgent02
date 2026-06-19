@@ -3,9 +3,9 @@ import time
 import logging
 from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 from src.core.config import REPORT_WORKER_MODEL_PRIMARY, REPORT_WORKER_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 logger = logging.getLogger("MultiAgent.ReportWorker")
 
@@ -40,11 +40,13 @@ def cleanup_old_reports(reports_dir: str, max_age_hours: int = 48):
 
 def get_report_model():
     """Get the LLM model for report generation."""
-    primary_key = os.getenv("GROQ_CORE_KEY")
-    api_key = primary_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=REPORT_WORKER_MODEL_PRIMARY, temperature=0.3, api_key=api_key)
-    fallback = ChatGroq(model=REPORT_WORKER_MODEL_FALLBACK, temperature=0.3, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    return build_model_with_fallback(
+        "report_worker",
+        REPORT_WORKER_MODEL_PRIMARY,
+        REPORT_WORKER_MODEL_FALLBACK,
+        temperature=0.3,
+        api_key_envs=("GROQ_CORE_KEY", "AGENT_API_KEY"),
+    )
 
 def report_worker_node(state: dict) -> dict:
     """
@@ -72,7 +74,7 @@ Please write the comprehensive report based on the above information.
             SystemMessage(content=REPORT_SYSTEM_PROMPT),
             HumanMessage(content=prompt)
         ])
-        report_content = response.content.strip()
+        report_content = message_text(response).strip()
         
         # Ensure reports directory exists and clean up old reports
         reports_dir = os.path.join(os.getcwd(), "reports")

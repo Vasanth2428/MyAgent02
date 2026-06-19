@@ -59,14 +59,24 @@ Frontend/Web Project Rules:
 - Inspect existing configurations first: Always check `./workspace` for existing configurations (like package.json, vite.config.js, webpack.config.js) and align your code structure and dependencies with them instead of creating redundant configurations or nested conflicting subprojects.
 - Creating new pages/forms/subprojects: When asked to create a new page, form, or UI module (e.g., a "highschool form"), create a new subdirectory under `./workspace/` (e.g., `./workspace/highschool_form/`). Do NOT pollute the root directory.
 - Standard React/Vite Structure inside subdirectories: Any newly created subdirectory representing a page or form must contain a complete, runnable React application structured as follows:
-  1. An `index.html` at the root of the subdirectory (e.g., `./workspace/highschool_form/index.html`) with `<div id="root"></div>` and a `<script type="module" src="./src/index.jsx"></script>` targeting the entry point in `src/`.
-  2. A `src/` folder inside the subdirectory (e.g., `./workspace/highschool_form/src/`) containing:
+  1. A local `package.json`, `package-lock.json`, and `vite.config.js` at the root of the subdirectory (e.g., `./workspace/highschool_form/package.json`) to make the project self-contained and run-able on its own.
+  2. An `index.html` at the root of the subdirectory (e.g., `./workspace/highschool_form/index.html`) with `<div id="root"></div>` and a `<script type="module" src="./src/index.jsx"></script>` targeting the entry point in `src/`.
+  3. A `src/` folder inside the subdirectory (e.g., `./workspace/highschool_form/src/`) containing:
      - `index.jsx`: The JavaScript entry point with DOM mounting logic using React 18: `ReactDOM.createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>)`.
      - `App.jsx`: The React component representing the main page or form itself.
      - `App.css` (or styles): Aesthetic styles for the form.
 - Update Parent Config: Always update the `root` setting in the parent `workspace/vite.config.js` to point to the newly created subdirectory (e.g., `root: './highschool_form'`) so that the Vite dev server serves the new form.
 - File extensions: Always use `.jsx` or `.tsx` extensions for any files containing JSX syntax so bundlers like Vite can compile them successfully. Never use `.js` or `.ts` for JSX.
 - Configuration files: Configuration files (such as `vite.config.js` or `webpack.config.js`) must contain valid JavaScript/JSON module exports matching the configuration schema. Never write shell commands or CLI invocations inside configuration files.
+
+Backend Project Rules:
+- Creating new APIs/Services: When asked to build a backend API, database service, or server script, create a separate subdirectory under `./workspace/` (e.g., `./workspace/highschool_api/` or `./workspace/backend/`). Do NOT pollute the root workspace directory.
+- Standard FastAPI/Python Structure: Any newly created subdirectory representing a backend service should contain:
+  1. A `main.py` at the root of the subdirectory, setting up the framework (e.g., using `FastAPI()`) and declaring all routes/endpoints clearly.
+  2. A `requirements.txt` file listing all Python package dependencies with version bounds (e.g., `fastapi>=0.100.0`, `uvicorn>=0.22.0`).
+  3. A `README.md` explaining how to start the service locally (e.g., `uvicorn main:app --host 0.0.0.0 --port 8000`).
+- Database & Persistence: Standardize on lightweight local databases (such as SQLite using Python's built-in `sqlite3` or SQLAlchemy) to ensure the backend is fully self-contained and runnable without external database engines.
+- Validation: Ensure all backend Python code files compile successfully without syntax errors by running `python -m py_compile [file]` as part of your verification loop.
 
 Code Robustness & Quality Rules:
 - Error Handling: Ensure robust exception handling by wrapping file I/O, network requests, and database operations in try/except blocks (Python) or try/catch blocks (JavaScript/TypeScript).

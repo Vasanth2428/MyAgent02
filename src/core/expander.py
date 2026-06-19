@@ -2,11 +2,11 @@ import time
 import logging
 from typing import List
 
-from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
 from src.core.config import LLM_MODEL
+from src.core.model_provider import build_chat_model
 
 logger = logging.getLogger("RAG.Expander")
 
@@ -25,11 +25,13 @@ class _QueryVariations(BaseModel):
     )
 
 
-def _get_expander_model() -> ChatGroq:
-    import os
-    api_key = os.getenv("GROQ_API_KEY") or os.getenv("AGENT_API_KEY")
-    return ChatGroq(model=LLM_MODEL, temperature=0, api_key=api_key).with_structured_output(
-        _QueryVariations
+def _get_expander_model():
+    return build_chat_model(
+        "expander",
+        LLM_MODEL,
+        temperature=0,
+        api_key_envs=("GROQ_API_KEY", "AGENT_API_KEY"),
+        structured_output=_QueryVariations,
     )
 
 
@@ -41,7 +43,7 @@ class QueryExpander:
     generate alternative versions of your query, which helps find more documents
     that might be relevant but use different wording.
 
-    Uses ChatGroq with structured output instead of raw groq client + manual json.loads.
+    Uses a provider-neutral LangChain model with structured output.
     """
 
     def __init__(self, client=None, *args, **kwargs):

@@ -1,10 +1,10 @@
 import time
 import logging
 
-from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 
 from src.core.config import LLM_MODEL, HYDE_MAX_TOKENS, HYDE_TEMPERATURE
+from src.core.model_provider import build_chat_model, message_text
 
 logger = logging.getLogger("RAG.HyDE")
 
@@ -15,14 +15,13 @@ _HYDE_PROMPT = (
 )
 
 
-def _get_hyde_model() -> ChatGroq:
-    import os
-    api_key = os.getenv("GROQ_API_KEY") or os.getenv("AGENT_API_KEY")
-    return ChatGroq(
-        model=LLM_MODEL,
+def _get_hyde_model():
+    return build_chat_model(
+        "hyde",
+        LLM_MODEL,
         temperature=HYDE_TEMPERATURE,
         max_tokens=HYDE_MAX_TOKENS,
-        api_key=api_key,
+        api_key_envs=("GROQ_API_KEY", "AGENT_API_KEY"),
     )
 
 
@@ -35,7 +34,7 @@ class HyDEGenerator:
     that to search for real documents that match. It's like brainstorming what
     a good answer might look like before we go find it.
 
-    Uses ChatGroq (LangChain-native) instead of raw groq client calls.
+    Uses a provider-neutral LangChain model instead of direct provider calls.
     """
 
     def __init__(self, client=None, *args, **kwargs):
@@ -62,7 +61,7 @@ class HyDEGenerator:
             else:
                 model = _get_hyde_model()
                 response = model.invoke([HumanMessage(content=_HYDE_PROMPT.format(query=query))])
-                hypothetical_doc = response.content.strip()
+                hypothetical_doc = message_text(response).strip()
             t_ms = (time.time() - t_start) * 1000
             logger.info(f"Created hypothetical answer in {t_ms:.1f}ms")
             return hypothetical_doc
@@ -91,7 +90,7 @@ class HyDEGenerator:
             else:
                 model = _get_hyde_model()
                 response = await model.ainvoke([HumanMessage(content=_HYDE_PROMPT.format(query=query))])
-                hypothetical_doc = response.content.strip()
+                hypothetical_doc = message_text(response).strip()
             t_ms = (time.time() - t_start) * 1000
             logger.info(f"Created hypothetical answer async in {t_ms:.1f}ms")
             return hypothetical_doc

@@ -3,7 +3,6 @@ import os
 import logging
 from typing import List, Dict
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.UtilityWorker")
 
@@ -18,13 +17,17 @@ Do not answer general knowledge questions.
 
 
 from src.core.config import UTILITY_WORKER_MODEL_PRIMARY, UTILITY_WORKER_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 def get_routing_model():
-    """Get the LLM model for routing via Groq."""
-    api_key = os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=UTILITY_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
-    fallback = ChatGroq(model=UTILITY_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    """Get the configured LLM model for utility reasoning."""
+    return build_model_with_fallback(
+        "utility_worker",
+        UTILITY_WORKER_MODEL_PRIMARY,
+        UTILITY_WORKER_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("AGENT_API_KEY",),
+    )
 
 
 def _build_utility_response(response: str, scratchpad: str, result_type: str = "Utility Worker") -> dict:
@@ -96,7 +99,7 @@ def utility_worker_node(state: dict) -> dict:
                     SystemMessage(content=UTILITY_SYSTEM_PROMPT),
                     HumanMessage(content=prompt)
                 ])
-                safe_response = response.content
+                safe_response = message_text(response)
                 print(f"[UTILITY WORKER] Response:\n{safe_response}")
                 return _build_utility_response(safe_response, scratchpad, "Utility Worker")
                 

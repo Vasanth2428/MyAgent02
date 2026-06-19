@@ -4,9 +4,9 @@ import logging
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 from src.core.config import CODE_CRITIC_MODEL_PRIMARY, CODE_CRITIC_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback
 
 logger = logging.getLogger("MultiAgent.CodeCriticWorker")
 
@@ -39,12 +39,15 @@ class CriticReport(BaseModel):
 
 
 def get_critic_model():
-    """Returns Groq model with structured output mapping for Critic reports."""
-    validation_key = os.getenv("GROQ_VALIDATION_KEY")
-    api_key = validation_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=CODE_CRITIC_MODEL_PRIMARY, temperature=0, api_key=api_key).with_structured_output(CriticReport)
-    fallback = ChatGroq(model=CODE_CRITIC_MODEL_FALLBACK, temperature=0, api_key=api_key).with_structured_output(CriticReport)
-    return primary.with_fallbacks([fallback])
+    """Return the configured model with structured CriticReport output."""
+    return build_model_with_fallback(
+        "code_critic",
+        CODE_CRITIC_MODEL_PRIMARY,
+        CODE_CRITIC_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("GROQ_VALIDATION_KEY", "AGENT_API_KEY"),
+        structured_output=CriticReport,
+    )
 
 
 def code_critic_worker_node(state: dict) -> dict:

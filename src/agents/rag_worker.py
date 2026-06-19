@@ -3,9 +3,9 @@ import os
 import logging
 from typing import List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 from src.core.config import RAG_WORKER_MODEL_PRIMARY, RAG_WORKER_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 logger = logging.getLogger("MultiAgent.RAGWorker")
 
@@ -19,12 +19,14 @@ Never invent information. Use only what you find in the document search results.
 
 
 def get_reasoning_model():
-    """Get the LLM model for complex reasoning via Groq."""
-    core_key = os.getenv("GROQ_CORE_KEY")
-    api_key = core_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=RAG_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
-    fallback = ChatGroq(model=RAG_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    """Get the configured LLM model for document reasoning."""
+    return build_model_with_fallback(
+        "rag_worker",
+        RAG_WORKER_MODEL_PRIMARY,
+        RAG_WORKER_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("GROQ_CORE_KEY", "AGENT_API_KEY"),
+    )
 
 
 def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
@@ -97,7 +99,7 @@ def rag_worker_node(state: dict, document_tool: callable = None) -> dict:
             HumanMessage(content=f"Documents:\n{context}\n\nQuestion: {target_query}")
         ])
         
-        safe_response = validate_tool_output(response.content)
+        safe_response = validate_tool_output(message_text(response))
         print(f"[RAG WORKER] Response:\n{safe_response}")
         
         updated_scratchpad = scratchpad + f"\n- [RAG Worker]: {safe_response}"

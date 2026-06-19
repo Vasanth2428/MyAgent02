@@ -282,7 +282,7 @@ class SessionLoggingMiddleware:
 
                 receive = replay_receive
 
-            token = session_id_var.set(session_id)
+        token = session_id_var.set(session_id)
         try:
             await self.app(scope, receive, send)
         finally:

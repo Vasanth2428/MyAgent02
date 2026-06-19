@@ -93,13 +93,12 @@ def _is_safe_path(filepath: str) -> bool:
         if not abs_path.startswith(real_workspace):
             return False
             
-    basename = os.path.basename(abs_path).lower()
-    if basename == "package.json":
-        return False
-        
     rel_path = os.path.relpath(abs_path, WORKSPACE_ROOT)
     normalized_rel = rel_path.replace("\\", "/").lower()
     
+    if normalized_rel == "package.json":
+        return False
+        
     if normalized_rel == ".." or normalized_rel.startswith("../") or ".." in normalized_rel:
         return False
         
@@ -739,6 +738,66 @@ def scaffold_react_app(project_name: str) -> str:
             with open(pkg_path, "w", encoding="utf-8") as f:
                 f.write(package_json_content)
                 
+        # 2b. Write local package.json, package-lock.json, and vite.config.js inside project directory
+        local_pkg_path = os.path.join(project_dir, "package.json")
+        default_pkg_content = """{
+  "name": "project_name_placeholder",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.4"
+  }
+}""".replace("project_name_placeholder", project_name)
+
+        parent_pkg_path = os.path.join(WORKSPACE_ROOT, "package.json")
+        if os.path.exists(parent_pkg_path):
+            try:
+                import json
+                with open(parent_pkg_path, "r", encoding="utf-8") as f:
+                    p_data = json.load(f)
+                p_data["name"] = project_name
+                default_pkg_content = json.dumps(p_data, indent=2)
+            except Exception as e:
+                logger.warning(f"Failed to read parent package.json: {e}")
+
+        with open(local_pkg_path, "w", encoding="utf-8") as f:
+            f.write(default_pkg_content)
+
+        local_lock_path = os.path.join(project_dir, "package-lock.json")
+        parent_lock_path = os.path.join(WORKSPACE_ROOT, "package-lock.json")
+        if os.path.exists(parent_lock_path):
+            try:
+                import shutil
+                shutil.copy2(parent_lock_path, local_lock_path)
+            except Exception as e:
+                logger.warning(f"Failed to copy parent package-lock.json to local path: {e}")
+
+        local_vite_path = os.path.join(project_dir, "vite.config.js")
+        local_vite_content = """import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()]
+})
+"""
+        with open(local_vite_path, "w", encoding="utf-8") as f:
+            f.write(local_vite_content)
+
         # 3. Write index.html
         html_path = os.path.join(project_dir, "index.html")
         html_content = """<!DOCTYPE html>

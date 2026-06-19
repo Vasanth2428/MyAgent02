@@ -4,9 +4,9 @@ import logging
 from typing import Dict, List, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 from src.core.config import SUPERVISOR_MODEL_PRIMARY, SUPERVISOR_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback
 from src.graph.worker_output_cache import (
     store_worker_output,
     get_worker_output,
@@ -70,11 +70,14 @@ class SupervisorDecision(BaseModel):
 
 
 def get_routing_model():
-    primary_key = os.getenv("GROQ_API_KEY")
-    api_key = primary_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=SUPERVISOR_MODEL_PRIMARY, temperature=0, api_key=api_key).with_structured_output(SupervisorDecision)
-    fallback = ChatGroq(model=SUPERVISOR_MODEL_FALLBACK, temperature=0, api_key=api_key).with_structured_output(SupervisorDecision)
-    return primary.with_fallbacks([fallback])
+    return build_model_with_fallback(
+        "supervisor",
+        SUPERVISOR_MODEL_PRIMARY,
+        SUPERVISOR_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("GROQ_API_KEY", "AGENT_API_KEY"),
+        structured_output=SupervisorDecision,
+    )
 
 
 def _get_session_id(state: dict) -> str:

@@ -2,20 +2,22 @@ import os
 import logging
 from langgraph.graph import END
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from langchain_groq import ChatGroq
 
 from src.core.config import SYNTHESIZER_MODEL_PRIMARY, SYNTHESIZER_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 logger = logging.getLogger("MultiAgent.Synthesizer")
 
 
 def get_reasoning_model():
-    """Get the LLM model for synthesis via Groq."""
-    primary_key = os.getenv("GROQ_API_KEY")
-    api_key = primary_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=SYNTHESIZER_MODEL_PRIMARY, temperature=0.3, api_key=api_key)
-    fallback = ChatGroq(model=SYNTHESIZER_MODEL_FALLBACK, temperature=0.3, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    """Get the configured LLM model for synthesis."""
+    return build_model_with_fallback(
+        "synthesizer",
+        SYNTHESIZER_MODEL_PRIMARY,
+        SYNTHESIZER_MODEL_FALLBACK,
+        temperature=0.3,
+        api_key_envs=("GROQ_API_KEY", "AGENT_API_KEY"),
+    )
 
 
 def synthesizer_node(state: dict) -> dict:
@@ -108,7 +110,7 @@ Formatting Guidelines:
             SystemMessage(content="You are a helpful AI assistant synthesizing information."),
             HumanMessage(content=synthesis_prompt)
         ])
-        final_answer = response.content.strip() if response.content else ""
+        final_answer = message_text(response).strip()
     except Exception as e:
         error_str = str(e)
         logger.error(f"Error in synthesizer node: {error_str}")

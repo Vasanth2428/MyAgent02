@@ -3,7 +3,6 @@ import os
 import logging
 from typing import List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.WebWorker")
 
@@ -14,13 +13,17 @@ Structure responses with headers, bullet points, and clear formatting.
 
 
 from src.core.config import WEB_WORKER_MODEL_PRIMARY, WEB_WORKER_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 def get_reasoning_model():
-    """Get the LLM model for complex reasoning via Groq."""
-    api_key = os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=WEB_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
-    fallback = ChatGroq(model=WEB_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    """Get the configured LLM model for web reasoning."""
+    return build_model_with_fallback(
+        "web_worker",
+        WEB_WORKER_MODEL_PRIMARY,
+        WEB_WORKER_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("AGENT_API_KEY",),
+    )
 
 
 def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
@@ -89,7 +92,7 @@ def web_worker_node(state: dict, web_search_tool: callable = None) -> dict:
             HumanMessage(content=f"Search results:\n{context}\n\nQuestion: {target_query}\n\nSources: {sources}")
         ])
         
-        safe_response = validate_tool_output(response.content)
+        safe_response = validate_tool_output(message_text(response))
         print(f"[WEB WORKER] Response:\n{safe_response}")
         
         updated_scratchpad = scratchpad + f"\n- [Web Worker]: {safe_response}"

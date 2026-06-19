@@ -4,7 +4,6 @@ import re
 import logging
 from typing import List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 logger = logging.getLogger("MultiAgent.ScraperWorker")
 
@@ -15,13 +14,17 @@ Keep your output structured, clean, and focus only on the facts related to the q
 
 
 from src.core.config import SCRAPER_WORKER_MODEL_PRIMARY, SCRAPER_WORKER_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 def get_reasoning_model():
-    """Get the LLM model for complex reasoning via Groq."""
-    api_key = os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=SCRAPER_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
-    fallback = ChatGroq(model=SCRAPER_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    """Get the configured LLM model for scraped-content reasoning."""
+    return build_model_with_fallback(
+        "scraper_worker",
+        SCRAPER_WORKER_MODEL_PRIMARY,
+        SCRAPER_WORKER_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("AGENT_API_KEY",),
+    )
 
 
 def safe_truncate_text(text: str, max_chars: int = 4000) -> str:
@@ -140,7 +143,7 @@ async def scraper_worker_node(state: dict, scraper_tool: callable = None) -> dic
             HumanMessage(content=summary_prompt)
         ])
         
-        safe_response = validate_tool_output(response.content)
+        safe_response = validate_tool_output(message_text(response))
         print(f"[SCRAPER WORKER] Scrape analysis complete.")
         
         updated_scratchpad = scratchpad + f"\n- [Scraper Worker]: Content from {url}:\n{safe_response}"

@@ -2,9 +2,9 @@
 import os
 import logging
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_groq import ChatGroq
 
 from src.core.config import CRITIC_MODEL_PRIMARY, CRITIC_MODEL_FALLBACK
+from src.core.model_provider import build_model_with_fallback, message_text
 
 logger = logging.getLogger("MultiAgent.CriticWorker")
 
@@ -21,12 +21,14 @@ Your duties:
 
 
 def get_reasoning_model():
-    """Get the LLM model for complex reasoning via Groq."""
-    validation_key = os.getenv("GROQ_VALIDATION_KEY")
-    api_key = validation_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=CRITIC_MODEL_PRIMARY, temperature=0, api_key=api_key)
-    fallback = ChatGroq(model=CRITIC_MODEL_FALLBACK, temperature=0, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    """Get the configured LLM model for critique."""
+    return build_model_with_fallback(
+        "critic",
+        CRITIC_MODEL_PRIMARY,
+        CRITIC_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=("GROQ_VALIDATION_KEY", "AGENT_API_KEY"),
+    )
 
 
 def critic_worker_node(state: dict) -> dict:
@@ -70,7 +72,7 @@ Analyze and output:
             SystemMessage(content=CRITIC_SYSTEM_PROMPT),
             HumanMessage(content=critique_prompt)
         ])
-        safe_response = validate_tool_output(response.content)
+        safe_response = validate_tool_output(message_text(response))
         print(f"[CRITIC WORKER] Critique analysis complete.")
         
         retry_count = state.get("critic_retry_count", 0)
