@@ -15,6 +15,10 @@ from src.tools.coding_tools import modify_files as _modify_files
 from src.tools.coding_tools import run_safe_commands as _run_safe_commands
 from src.tools.coding_tools import delete_file as _delete_file
 from src.tools.coding_tools import scaffold_react_app as _scaffold_react_app
+from src.tools.token_saving import estimate_tokens as _estimate_tokens
+from src.tools.token_saving import get_token_budget_remaining as _get_token_budget_remaining
+from src.tools.token_saving import fetch_file_headers as _fetch_file_headers
+from src.tools.token_saving import summarize_tool_output as _summarize_tool_output
 from src.core.config import CODING_WORKER_MODEL_PRIMARY, CODING_WORKER_MODEL_FALLBACK
 
 logger = logging.getLogger("MultiAgent.CodingWorker")
@@ -173,8 +177,8 @@ def search_symbols(query: str) -> str:
         return f"Error searching symbols: {e}"
 
 @tool
-def get_symbol_definition(symbol_name: str) -> str:
-    """Retrieves the file location, lines, docstring, arguments, and return types for a specific symbol."""
+def get_symbol_definition(symbol_name: str, signature_only: bool = False) -> str:
+    """Retrieves the file location, lines, docstring, arguments, and return types for a specific symbol. Set signature_only=True to skip fetching the full source body and save ~70% tokens."""
     try:
         service = get_retrieval_service()
         syms = service.get_symbol_definition(symbol_name)
@@ -193,6 +197,13 @@ def get_symbol_definition(symbol_name: str) -> str:
                 output.append(f"  Return Type: {s['return_type']}")
             if s.get("docstring"):
                 output.append(f"  Docstring:\n{s['docstring']}")
+            if not signature_only:
+                # Fetch full source body only when signature_only is False
+                try:
+                    snippet = _read_files(s['filepath'], s['start_line'], s['end_line'])
+                    output.append(f"  Source:\n{snippet}")
+                except Exception:
+                    pass
             output.append("-" * 40)
         return "\n".join(output)
     except Exception as e:
@@ -351,6 +362,29 @@ def scaffold_react_app(project_name: str) -> str:
     """Scaffolds a new React+Vite application inside `./workspace/[project_name]/`. Creates standard directories and files, and updates parent vite.config.js."""
     return _scaffold_react_app(project_name)
 
+@tool
+def estimate_tokens(text: str) -> str:
+    """Returns the exact BPE token count for the given text. Use this to pre-check if reading a file or appending output will exceed the context budget. No LLM call — fast local computation."""
+    count = _estimate_tokens(text)
+    return f"Token count: {count}"
+
+@tool
+def get_token_budget_remaining(current_prompt_tokens: int, context_limit: int = 0) -> str:
+    """Returns how many tokens remain before the context limit is reached. Helps decide whether to load more files or summarise first. context_limit defaults to the system TOTAL_CONTEXT_BUDGET (16384) when 0."""
+    import json
+    result = _get_token_budget_remaining(current_prompt_tokens, context_limit)
+    return json.dumps(result, indent=2)
+
+@tool
+def fetch_file_headers(filepath: str, max_lines: int = 20) -> str:
+    """Returns only the first max_lines lines of a file (imports + class/function signatures). Much cheaper than read_files for understanding a file's API. max_lines capped at 50."""
+    return _fetch_file_headers(filepath, max_lines)
+
+@tool
+def summarize_tool_output(text: str, max_tokens: int = 200) -> str:
+    """Truncates verbose tool output (grep results, file listings, command output) to fit within max_tokens. Fast line-level truncation — no LLM call."""
+    return _summarize_tool_output(text, max_tokens)
+
 # Map of tool names to actual functions for invocation
 tools_map = {
     "read_files": read_files,
@@ -370,7 +404,11 @@ tools_map = {
     "get_call_graph": get_call_graph,
     "get_symbols_in_file": get_symbols_in_file,
     "delete_file": delete_file,
-    "scaffold_react_app": scaffold_react_app
+    "scaffold_react_app": scaffold_react_app,
+    "estimate_tokens": estimate_tokens,
+    "get_token_budget_remaining": get_token_budget_remaining,
+    "fetch_file_headers": fetch_file_headers,
+    "summarize_tool_output": summarize_tool_output
 }
 tools = list(tools_map.values())
 
@@ -388,7 +426,7 @@ def get_coding_model(task: str = ""):
         active_tools = tools
         logger.info(f"Binding all {len(tools)} tools to coding worker (complex query detected).")
     else:
-        active_tools = [read_files, search_code, create_files, modify_files, list_files, run_safe_commands, delete_file]
+        active_tools = [read_files, search_code, create_files, modify_files, list_files, run_safe_commands, delete_file, estimate_tokens, get_token_budget_remaining, fetch_file_headers, summarize_tool_output]
     primary = ChatGroq(model=CODING_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key).bind_tools(active_tools)
     fallback = ChatGroq(model=CODING_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key).bind_tools(active_tools)
     return primary.with_fallbacks([fallback])

@@ -470,3 +470,52 @@ def parse_code_file(filepath: str, language: str = "python") -> Dict[str, Any]:
         raise ParserInitializationException(
             f"Failed to parse file '{filepath}' with language '{language}': {e}"
         ) from e
+
+# --- Token‑Saving Helper Functions (appended) ---
+
+TOKENS_PER_LINE = 5  # Approximate token count per line for estimation
+
+def extract_symbol_slices(content: bytes, filepath: str, language: str = "python") -> list:
+    """Parse a source file and return a list of minimal symbol descriptors.
+
+    Each descriptor contains:
+        - name: symbol name
+        - type: "class", "function", or "method"
+        - start_line / end_line: 1‑based line numbers
+        - token_estimate: estimated token count for the symbol block
+    """
+    from src.core.code.parser import parse_code_file
+    try:
+        parsed = parse_code_file(filepath, language)
+    except Exception as e:
+        logger.error(f"Failed to parse file for symbol slicing: {e}")
+        return []
+    symbols = parsed.get("symbols", [])
+    slices = []
+    for sym in symbols:
+        start = sym.get("start_line")
+        end = sym.get("end_line")
+        if start is None or end is None:
+            continue
+        token_est = (end - start + 1) * TOKENS_PER_LINE
+        slices.append({
+            "name": sym.get("name"),
+            "type": sym.get("type"),
+            "start_line": start,
+            "end_line": end,
+            "token_estimate": token_est,
+        })
+    return slices
+
+def get_symbol_tokens(symbol: dict) -> int:
+    """Return the pre‑computed token estimate for a symbol dictionary.
+    If not present, fall back to a line‑based estimate.
+    """
+    est = symbol.get("token_estimate")
+    if est is not None:
+        return est
+    start = symbol.get("start_line")
+    end = symbol.get("end_line")
+    if start is None or end is None:
+        return 0
+    return (end - start + 1) * TOKENS_PER_LINE

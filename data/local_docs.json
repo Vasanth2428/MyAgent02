@@ -3956,5 +3956,35 @@
     "content_hash": "f4a3f1a0d899b166",
     "upload_timestamp": 1781712476.7123973,
     "vector": null
+  },
+  {
+    "text": "This is a unique test phrase: QuantumEntanglement-2024-Beta-Gamma.",
+    "source": "test_ingest.txt",
+    "tags": [],
+    "document_id": "c35398b5-aab9-5719-a776-26733e64e82c",
+    "content_hash": "2dd030d55449433a",
+    "upload_timestamp": 1781786099.1982918,
+    "is_code": false,
+    "vector": null
+  },
+  {
+    "text": "This is a unique test phrase: QuantumEntanglement-2024-Beta-Gamma.",
+    "source": "test_ingest.txt",
+    "tags": [],
+    "document_id": "c35398b5-aab9-5719-a776-26733e64e82c",
+    "content_hash": "2dd030d55449433a",
+    "upload_timestamp": 1781791103.6002395,
+    "is_code": false,
+    "vector": null
+  },
+  {
+    "text": "This is a unique test phrase: QuantumEntanglement-2024-Beta-Gamma.",
+    "source": "test_ingest.txt",
+    "tags": [],
+    "document_id": "c35398b5-aab9-5719-a776-26733e64e82c",
+    "content_hash": "2dd030d55449433a",
+    "upload_timestamp": 1781791781.26054,
+    "is_code": false,
+    "vector": null
   }
 ]
