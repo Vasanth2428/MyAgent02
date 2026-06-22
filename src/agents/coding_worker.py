@@ -72,6 +72,8 @@ Frontend/Web Project Rules:
 - Update Parent Config: Always update the `root` setting in the parent `workspace/vite.config.js` to point to the newly created subdirectory (e.g., `root: './highschool_form'`) so that the Vite dev server serves the new form.
 - File extensions: Always use `.jsx` or `.tsx` extensions for any files containing JSX syntax so bundlers like Vite can compile them successfully. Never use `.js` or `.ts` for JSX.
 - Configuration files: Configuration files (such as `vite.config.js` or `webpack.config.js`) must contain valid JavaScript/JSON module exports matching the configuration schema. Never write shell commands or CLI invocations inside configuration files.
+- Modern Styling Guidelines: Web applications must look visually stunning and premium. Avoid basic grey/white tables or native default styling. Use curated modern color palettes (HSL-tailored colors, dark modes, glassmorphism, linear gradients, transitions), premium typography (Google Fonts like Outfit, Inter, or Roboto), and responsive layouts.
+- Scaffold Completeness Constraint: If a scaffolding tool (e.g., scaffold_react_app) creates placeholder files, you MUST immediately modify those files to implement the full application logic and styling. Do not leave the placeholder code in place.
 
 Backend Project Rules:
 - Creating new APIs/Services: When asked to build a backend API, database service, or server script, create a separate subdirectory under `./workspace/` (e.g., `./workspace/highschool_api/` or `./workspace/backend/`). Do NOT pollute the root workspace directory.
@@ -85,7 +87,7 @@ Backend Project Rules:
 Code Robustness & Quality Rules:
 - Error Handling: Ensure robust exception handling by wrapping file I/O, network requests, and database operations in try/except blocks (Python) or try/catch blocks (JavaScript/TypeScript).
 - Dependency & Import Checks: Verify all imported modules/packages are present in the repository dependencies (e.g., package.json or requirements.txt). Use relative imports correctly based on the workspace file layout.
-- Complete Implementations: Write full, complete, and working code. Never output placeholder code, skipped segments, or comments like `// TODO: implement later` or `pass` in the final code files.
+- Complete Implementations: Write full, complete, and working code. Never output placeholder code, skipped segments, or comments like `// TODO: implement later` or `pass` in the final code files. If a scaffolding tool writes a boilerplate, replace it immediately with a complete implementation.
 - Small Surgical Patches: Always prefer creating highly targeted, surgical unified diff patches that only modify the exact lines needed, avoiding full-file overwriting or unrelated modifications.
 
 Final Response Format:
@@ -415,8 +417,7 @@ tools = list(tools_map.values())
 
 def get_coding_model(task: str = ""):
     """Get the LLM model with tools bound for routing. Prunes tools for simple tasks to stay under TPM limits."""
-    primary_key = os.getenv("GROQ_CORE_KEY")
-    api_key = primary_key or os.getenv("AGENT_API_KEY")
+    from src.core.model_provider import build_model_with_fallback, resolve_provider
     
     # Prune tools if the task is simple to save token budget
     keywords = ["dependency", "dependencies", "symbol", "symbols", "call graph", "audit", "security", "patch", "diff", "hybrid", "create", "write", "file", "modify", "edit", "scaffold"]
@@ -427,18 +428,32 @@ def get_coding_model(task: str = ""):
         logger.info(f"Binding all {len(tools)} tools to coding worker (complex query detected).")
     else:
         active_tools = [read_files, search_code, create_files, modify_files, list_files, run_safe_commands, delete_file, estimate_tokens, get_token_budget_remaining, fetch_file_headers, summarize_tool_output]
-    primary = ChatGroq(model=CODING_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key).bind_tools(active_tools)
-    fallback = ChatGroq(model=CODING_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key).bind_tools(active_tools)
-    return primary.with_fallbacks([fallback])
+    
+    provider = resolve_provider("coding_worker", "primary")
+    keys = ("GROQ_CORE_KEY", "AGENT_API_KEY") if provider == "groq" else ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    
+    return build_model_with_fallback(
+        role="coding_worker",
+        primary_model=CODING_WORKER_MODEL_PRIMARY,
+        fallback_model=CODING_WORKER_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=keys,
+        tools=active_tools,
+    )
 
 
 def get_validation_model():
     """Get the LLM model without tools bound for capability validation."""
-    primary_key = os.getenv("GROQ_CORE_KEY")
-    api_key = primary_key or os.getenv("AGENT_API_KEY")
-    primary = ChatGroq(model=CODING_WORKER_MODEL_PRIMARY, temperature=0, api_key=api_key)
-    fallback = ChatGroq(model=CODING_WORKER_MODEL_FALLBACK, temperature=0, api_key=api_key)
-    return primary.with_fallbacks([fallback])
+    from src.core.model_provider import build_model_with_fallback, resolve_provider
+    provider = resolve_provider("coding_worker", "primary")
+    keys = ("GROQ_CORE_KEY", "AGENT_API_KEY") if provider == "groq" else ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    return build_model_with_fallback(
+        role="coding_worker",
+        primary_model=CODING_WORKER_MODEL_PRIMARY,
+        fallback_model=CODING_WORKER_MODEL_FALLBACK,
+        temperature=0,
+        api_key_envs=keys,
+    )
 
 
 VALIDATION_SYSTEM_PROMPT = """You are a task compatibility validator.

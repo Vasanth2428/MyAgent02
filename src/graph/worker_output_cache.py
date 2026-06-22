@@ -16,6 +16,8 @@ def _evict_stale() -> None:
 
 
 def store_worker_output(worker_name: str, output: str, *, session_id: Optional[str] = None) -> Tuple[str, str]:
+    if not isinstance(output, str):
+        output = str(output)
     cache_id = f"wo_{worker_name}_{abs(hash(output)) & 0xFFFFFFFF:x}"
     _IN_MEMORY_CACHE[cache_id] = {
         "text": output,

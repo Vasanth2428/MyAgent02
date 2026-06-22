@@ -59,6 +59,13 @@ CRITICAL DEDUPLICATION RULES (you MUST follow these before every routing decisio
 - If the coding_worker has already scaffolded a project (keyword 'scaffold' appears in completed tasks), route to coding_worker for CONTENT only — not scaffolding again.
 - If all planned steps are complete or covered by completed tasks, route DIRECTLY to 'synthesizer'. Do not route to 'report_worker' unless the user explicitly asked for a report.
 - Prefer 'synthesizer' over any looping back to workers when sufficient information is available.
+
+CODING TASK SPECIFICATION RULES:
+- When routing to coding_worker for implementation or editing:
+  1. Break down broad requests (e.g. "Create a fullstack crypto portfolio website") into specific, component-level tasks (e.g., "Scaffold Vite app", "Implement SQLite schema and FastAPI backend", "Develop premium dashboard interface in App.jsx"). Never dispatch a single task covering both frontend and backend.
+  2. For frontend tasks, explicitly instruct coding_worker to use premium design aesthetics (HSL-tailored colors, dark mode, glassmorphism, Outfit/Inter typography, linear gradients, transitions, responsive layouts, hover animations).
+  3. For backend tasks, instruct the worker to use local SQLite databases, FastAPI routes, and write validation checks.
+  4. Ensure task instructions are concrete, specifying file paths and expected behaviors. Do not use vague or generic summaries.
 """
 
 

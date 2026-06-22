@@ -80,7 +80,7 @@ def _is_safe_path(filepath: str) -> bool:
             
         allowed_root_configs = {"vite.config.js", "package.json"}
         if clean_path not in allowed_root_configs:
-            if not (clean_path == _active_project or clean_path.startswith(_active_project + "/")):
+            if not (clean_path == _active_project or clean_path.startswith(_active_project + "/") or clean_path.startswith(_active_project + "_")):
                 return False
         
     real_workspace = os.path.realpath(WORKSPACE_ROOT)
@@ -861,7 +861,7 @@ body {
         # 7. Update parent vite.config.js root option
         update_vite_config_root(project_name)
         
-        return f"Success: Scaffolded React application '{project_name}' successfully."
+        return f"Success: Scaffolded React application '{project_name}' with default placeholders in src/App.jsx and src/App.css. IMPORTANT: You must now write the actual application logic and styles in these files using modify_files. Do not leave the placeholder code."
         
     except Exception as e:
         return f"Error scaffolding React application: {e}"
