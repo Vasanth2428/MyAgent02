@@ -51,11 +51,11 @@ def safe_truncate_text(text: str, max_chars: int = 4000) -> str:
     return slice_area
 
 
-async def scraper_worker_node(state: dict, scraper_tool: callable = None) -> dict:
+def scraper_worker_node(state: dict, scraper_tool: callable = None) -> dict:
     """
     Scraper worker that fetches text content from target URLs.
     """
-    from src.core.scraper import scrape_web_page_async
+    from src.core.scraper import scrape_web_page
     from src.tools.safety_filters import sanitize_user_input, validate_tool_output
     
     current_task = state.get("current_task", "")
@@ -111,7 +111,7 @@ async def scraper_worker_node(state: dict, scraper_tool: callable = None) -> dic
         print(f"\n[SCRAPER WORKER] Scraped content requested for: '{url}'")
         
         if scraper_tool is None:
-            raw_content = await scrape_web_page_async(url)
+            raw_content = scrape_web_page(url)
         else:
             raw_content = scraper_tool(url)
             
