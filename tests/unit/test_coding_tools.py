@@ -189,3 +189,33 @@ def test_resource_limits_cpu(monkeypatch):
     res = run_safe_commands("python -c \"while True: pass\"")
     assert "CPU time limit" in res
 
+
+def test_parse_command_errors():
+    from src.tools.coding_tools import _parse_command_errors
+    
+    # 1. Test Python Syntax error parsing
+    py_stdout = ""
+    py_stderr = """  File "workspace/main.py", line 12
+    def test_func()
+                   ^
+SyntaxError: expected ':'
+"""
+    parsed = _parse_command_errors(py_stdout, py_stderr)
+    assert "DETECTED PYTHON ERROR" in parsed
+    assert "workspace/main.py" in parsed
+    assert "Line: 12" in parsed
+    assert "expected ':'" in parsed
+    
+    # 2. Test missing module parsing
+    mod_stderr = "ModuleNotFoundError: No module named 'invalid_module'"
+    parsed_mod = _parse_command_errors("", mod_stderr)
+    assert "DETECTED MISSING DEPENDENCY" in parsed_mod
+    assert "invalid_module" in parsed_mod
+
+    # 3. Test frontend build error parsing
+    frontend_stdout = "crypto_portfolio_frontend/src/App.jsx:15:3: error: Expected a semicolon"
+    parsed_fe = _parse_command_errors(frontend_stdout, "")
+    assert "DETECTED FRONTEND BUILD ERROR" in parsed_fe
+    assert "crypto_portfolio_frontend/src/App.jsx" in parsed_fe
+    assert "Line: 15" in parsed_fe
+

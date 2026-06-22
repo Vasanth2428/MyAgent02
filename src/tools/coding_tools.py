@@ -520,6 +520,68 @@ def _is_safe_command(cmd_args: List[str]) -> bool:
     return False
 
 
+def _parse_command_errors(stdout: str, stderr: str) -> str:
+    """Parses command stdout/stderr to identify specific compilation/execution errors and yield actionable suggestions."""
+    combined = (stdout or "") + "\n" + (stderr or "")
+    suggestions = []
+    import re
+    
+    # 1. Match standard Python traceback patterns (File "...", line X)
+    py_simple_trace = re.findall(r'File\s+["\'](.*?)["\'],\s+line\s+(\d+)', combined)
+    py_err_lines = re.findall(r'(\w+Error:\s+[^\n]*)', combined)
+    
+    if py_simple_trace:
+        seen = set()
+        for filepath, line_num in py_simple_trace:
+            clean_file = filepath.replace("\\", "/")
+            if (clean_file, line_num) in seen:
+                continue
+            seen.add((clean_file, line_num))
+            err_msg = py_err_lines[0] if py_err_lines else "Syntax or runtime error"
+            suggestions.append(
+                f"💡 DETECTED PYTHON ERROR:\n"
+                f"  - File: {clean_file}\n"
+                f"  - Line: {line_num}\n"
+                f"  - Error: {err_msg}\n"
+                f"  - Action required: Open '{clean_file}' around line {line_num} and fix the syntax/execution issue."
+            )
+            
+    # 2. Match missing Python dependencies
+    module_missing = re.findall(r'(?:ModuleNotFoundError|ImportError):\s*No\s+module\s+named\s+["\'](.*?)["\']', combined)
+    for mod in module_missing[:2]:
+        suggestions.append(
+            f"💡 DETECTED MISSING DEPENDENCY:\n"
+            f"  - Missing Python Module: '{mod}'\n"
+            f"  - Action required: Add '{mod}' to your requirements.txt dependency file or install it."
+        )
+        
+    # 3. Match frontend build errors (e.g. src/App.jsx:5:10)
+    frontend_errors = re.findall(
+        r'(\S+\.(?:jsx?|tsx?|css|js|ts))(?::|\s+line\s+)(\d+)(?::(\d+))?[\s:]*(.*error.*|.*failed.*|.*resolved.*)',
+        combined,
+        re.IGNORECASE
+    )
+    if frontend_errors:
+        seen = set()
+        for filepath, line_num, col_num, err_desc in frontend_errors:
+            clean_file = filepath.replace("\\", "/")
+            if (clean_file, line_num) in seen:
+                continue
+            seen.add((clean_file, line_num))
+            col_str = f", Col: {col_num}" if col_num else ""
+            suggestions.append(
+                f"💡 DETECTED FRONTEND BUILD ERROR:\n"
+                f"  - File: {clean_file}\n"
+                f"  - Line: {line_num}{col_str}\n"
+                f"  - Detail: {err_desc.strip()[:180]}\n"
+                f"  - Action required: Open '{clean_file}' around line {line_num} and resolve the build/compilation error."
+            )
+            
+    if suggestions:
+        return "\n\n=== 🛠️ AUTO-PARSED ERRORS & ACTIONABLE SUGGESTIONS ===\n" + "\n\n".join(suggestions) + "\n=======================================================\n"
+    return ""
+
+
 def execute_command(command: str) -> str:
     """Execute a command in the `./workspace` folder securely."""
     cmd_clean = command.strip()
@@ -638,7 +700,12 @@ def execute_command(command: str) -> str:
                 output.append(stderr_data)
                 
             status = f"\n[Command exited with status {proc.returncode}]"
-            return "\n".join(output) + status
+            
+            parsed_errors = ""
+            if proc.returncode != 0:
+                parsed_errors = _parse_command_errors(stdout_data, stderr_data)
+                
+            return "\n".join(output) + status + parsed_errors
             
     except Exception as e:
         return f"Error executing command: {e}"
