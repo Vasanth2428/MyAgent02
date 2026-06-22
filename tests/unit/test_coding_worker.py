@@ -94,7 +94,8 @@ class TestCodingWorker(unittest.TestCase):
         state = {
             "current_task": "Delete the temp file",
             "scratchpad": "[APPROVED: temp_delete.py]",
-            "messages": []
+            "messages": [],
+            "coding_worker_phase": "EXECUTION"
         }
     
         mock_delete = MagicMock()
@@ -131,7 +132,8 @@ class TestCodingWorker(unittest.TestCase):
             "current_task": "Modify the file",
             "scratchpad": "",
             "messages": [],
-            "patch_is_verified": True
+            "patch_is_verified": True,
+            "coding_worker_phase": "EXECUTION"
         }
         
         mock_modify = MagicMock()
@@ -170,7 +172,8 @@ class TestCodingWorker(unittest.TestCase):
             "current_task": "Create banking_form.html",
             "scratchpad": "[APPROVED: ./workspace/banking_form.html]",
             "messages": [],
-            "patch_is_verified": True
+            "patch_is_verified": True,
+            "coding_worker_phase": "EXECUTION"
         }
     
         mock_create = MagicMock()
@@ -273,7 +276,8 @@ class TestCodingWorker(unittest.TestCase):
             "current_task": "Create bypass file",
             "scratchpad": "",
             "messages": [],
-            "bypass_hitl": True
+            "bypass_hitl": True,
+            "coding_worker_phase": "EXECUTION"
         }
         
         mock_create = MagicMock()
@@ -605,6 +609,55 @@ Action Input: {"directory": "."}
         self.assertIn("DYNAMIC DEVELOPER RULES & KNOWLEDGE GUIDELINES", sys_msg.content)
         self.assertIn("Always write complete CSS stylesheets.", sys_msg.content)
         self.assertIn("Enforce dark mode glassmorphic styling.", sys_msg.content)
+
+    @patch("src.agents.coding_worker.get_coding_model")
+    @patch("src.agents.coding_worker.get_retrieval_service")
+    def test_coding_worker_node_phase_split_blocks(self, mock_get_retrieval, mock_get_model):
+        """Coding worker should block write tool calls during the PLANNING phase."""
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = ([], 0.0, 0.0)
+        mock_service = MagicMock()
+        mock_service.retriever = mock_retriever
+        mock_get_retrieval.return_value = mock_service
+
+        # Step 1: Model tries to edit a file during the PLANNING phase (step=1)
+        mock_tool_call = {
+            "name": "create_files",
+            "args": {"filepath": "early_write.py", "content": "a = 1"},
+            "id": "call_early"
+        }
+        mock_response = MagicMock()
+        mock_response.tool_calls = [mock_tool_call]
+        mock_response.content = "I will write this early."
+        
+        # Step 2: Model finishes after getting the block warning
+        mock_response_stop = MagicMock()
+        mock_response_stop.tool_calls = []
+        mock_response_stop.content = "Finished task."
+        
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = [mock_response, mock_response_stop]
+        mock_get_model.return_value = mock_llm
+
+        state = {
+            "current_task": "Write early_write.py",
+            "scratchpad": "",
+            "messages": [],
+            "coding_worker_phase": "PLANNING",
+            "bypass_hitl": True
+        }
+        
+        mock_create = MagicMock()
+        with patch.dict(tools_map, {"create_files": mock_create}):
+            res = coding_worker_node(state)
+            
+        # The create_files invocation should be BLOCKED (not called)
+        mock_create.invoke.assert_not_called()
+        
+        # The loop output should have a block warning ToolMessage sent to the agent
+        invoked_messages = mock_llm.invoke.call_args[0][0]
+        self.assertTrue(any("PLANNING phase" in msg.content for msg in invoked_messages if isinstance(msg, ToolMessage)))
+
 
 
 

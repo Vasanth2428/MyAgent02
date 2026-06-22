@@ -805,9 +805,48 @@ def coding_worker_node(state: dict) -> dict:
     final_explanation = "Task not completed due to step limit."
     blocked_for_approval = None
     
+    current_phase = state.get("coding_worker_phase", "PLANNING")
+    code_modified = state.get("code_modified", False)
+    
     while step < max_steps:
         step += 1
-        print(f"[CODING WORKER] Step {step}/{max_steps}")
+        print(f"[CODING WORKER] Step {step}/{max_steps} [Phase: {current_phase}]")
+        
+        # Inject Phase Prompts dynamically
+        if step == 1 and current_phase == "PLANNING":
+            agent_messages.append(
+                SystemMessage(
+                    content=(
+                        "=== PHASE 1: PLANNING ===\n"
+                        "You must start by analyzing the repository structure, reading key files, and exploring imported modules/symbols. "
+                        "Outline a clear plan of which files you will modify or create and what logic you will implement. "
+                        "Do not write or modify files during this planning phase."
+                    )
+                )
+            )
+        elif step == 3 and current_phase == "PLANNING":
+            current_phase = "EXECUTION"
+            agent_messages.append(
+                SystemMessage(
+                    content=(
+                        "=== PHASE 2: EXECUTION ===\n"
+                        "Planning phase complete. You must now implement your proposed changes. "
+                        "Create patch diffs and modify or create files as needed. Make sure your implementations are complete and visually premium."
+                    )
+                )
+            )
+        elif step == 6 and current_phase == "EXECUTION":
+            current_phase = "VERIFICATION"
+            agent_messages.append(
+                SystemMessage(
+                    content=(
+                        "=== PHASE 3: VERIFICATION ===\n"
+                        "Execution phase complete. You MUST now verify your changes. "
+                        "Run syntax validation or compiler checks (e.g. npm run build, python -m py_compile, or pytest) via run_safe_commands. "
+                        "If there are any errors or build failures, edit the files to fix them immediately. Do not exit until the build/syntax check passes."
+                    )
+                )
+            )
         
         try:
             response = model.invoke(agent_messages)
@@ -824,10 +863,26 @@ def coding_worker_node(state: dict) -> dict:
             
         # If no tool calls are generated, the model has finished the task
         if not tool_calls:
-            print("  No tool calls generated. Finishing.")
-            final_explanation = response.content
-            broken_out = True
-            break
+            if code_modified and current_phase != "VERIFICATION":
+                current_phase = "VERIFICATION"
+                print("  No tool calls generated, but verification is required. Forcing verification phase.")
+                agent_messages.append(
+                    SystemMessage(
+                        content=(
+                            "=== MANDATORY VERIFICATION REQUIRED ===\n"
+                            "You are attempting to finish the task. However, since you have modified files in the codebase, "
+                            "you MUST first run validation checks (e.g., python -m py_compile for python files, npm run build "
+                            "for react frontends, or run tests) using run_safe_commands to ensure your changes are correct and build successfully. "
+                            "Do not exit without verifying."
+                        )
+                    )
+                )
+                continue
+            else:
+                print("  No tool calls generated. Finishing.")
+                final_explanation = response.content
+                broken_out = True
+                break
                     
         # Process and execute each tool call
         blocked_for_approval_list = []
@@ -845,6 +900,16 @@ def coding_worker_node(state: dict) -> dict:
             print(f"  Calling Tool: '{tool_name}' ({tool_calls_count}/{max_tool_calls}) with args: {tool_args}")
             
             if tool_name in ["create_files", "modify_files", "delete_file"]:
+                if current_phase == "PLANNING":
+                    print(f"  [BLOCKED] Tool '{tool_name}' blocked during PLANNING phase.")
+                    obs = (
+                        "Error: You are in the PLANNING phase. You must first analyze the workspace structure and existing files, "
+                        "and output your implementation plan. Do not create/modify/delete files yet."
+                    )
+                    execution_message = ToolMessage(content=obs, tool_call_id=tool_id, name=tool_name)
+                    agent_messages.append(execution_message)
+                    continue
+                    
                 filepath = tool_args.get("filepath", "")
                 
                 # Programmatic Patch Verification constraint
@@ -895,6 +960,8 @@ def coding_worker_node(state: dict) -> dict:
                     tool_func = tools_map[tool_name]
                     try:
                         observation = tool_func.invoke(tool_args)
+                        if "Success:" in observation:
+                            code_modified = True
                     except Exception as e:
                         observation = f"Error executing tool '{tool_name}': {e}"
                     print(f"  Observation (first 100 chars): {observation[:100]}")
@@ -957,6 +1024,8 @@ def coding_worker_node(state: dict) -> dict:
             "coding_worker_step": step,
             "coding_worker_tool_calls_count": tool_calls_count,
             "patch_is_verified": state.get("patch_is_verified", False),
+            "coding_worker_phase": current_phase,
+            "code_modified": code_modified,
         }
     
     return {
@@ -972,6 +1041,8 @@ def coding_worker_node(state: dict) -> dict:
         "coding_worker_resume_tool_result": None,
         "coding_worker_resume_tool_call_id": None,
         "patch_is_verified": False,
+        "coding_worker_phase": "PLANNING",
+        "code_modified": False,
     }
 
 # Pending approval storage for streaming support
