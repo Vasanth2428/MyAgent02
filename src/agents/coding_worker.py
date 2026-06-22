@@ -754,8 +754,29 @@ def coding_worker_node(state: dict) -> dict:
         if session_id in _session_resume_results:
             del _session_resume_results[session_id]
 
+        # Query Weaviate for top 3 relevant coding standards/developer guidelines matching the task
+        retrieved_docs = []
+        try:
+            service = get_retrieval_service()
+            retrieved_docs, _, _ = service.retriever.retrieve(target_instruction, top_k=3)
+            logger.info(f"[CODING WORKER] Retrieved {len(retrieved_docs)} custom developer guidelines for task.")
+        except Exception as e:
+            logger.warning(f"[CODING WORKER] Could not retrieve dynamic RAG guidelines: {e}")
+
+        dynamic_rules = []
+        if retrieved_docs:
+            dynamic_rules.append("\n\n=== DYNAMIC DEVELOPER RULES & KNOWLEDGE GUIDELINES ===")
+            for idx, doc in enumerate(retrieved_docs, 1):
+                text = doc.get("text", "").strip()
+                source = doc.get("source", "unknown")
+                dynamic_rules.append(f"[{idx}] Source: {source}\n{text}\n")
+            dynamic_rules.append("=======================================================\n")
+        
+        dynamic_rules_text = "\n".join(dynamic_rules) if dynamic_rules else ""
+        system_prompt = CODING_SYSTEM_PROMPT + dynamic_rules_text
+
         agent_messages = [
-            SystemMessage(content=CODING_SYSTEM_PROMPT),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=f"Task: {target_instruction}\n\nBlackboard Findings: {scratchpad}")
         ]
         step = 0

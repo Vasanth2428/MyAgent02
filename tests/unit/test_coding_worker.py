@@ -561,6 +561,52 @@ Action Input: {"directory": "."}
         self.assertEqual(invoked_messages[5].content, "Human Approved. Execution Result:\nSuccess: Created file1.py")
         self.assertEqual(invoked_messages[6].content, "Human Approved. Execution Result:\nSuccess: Created file2.py")
 
+    @patch("src.agents.coding_worker.get_coding_model")
+    @patch("src.agents.coding_worker.get_retrieval_service")
+    def test_coding_worker_node_dynamic_rag_injection(self, mock_get_retrieval_service, mock_get_model):
+        """Coding worker should retrieve dynamic rules and append them to the system prompt."""
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = (
+            [
+                {"text": "Always write complete CSS stylesheets.", "source": "AGENTS.md"},
+                {"text": "Enforce dark mode glassmorphic styling.", "source": "design_guidelines.txt"}
+            ],
+            0.1,
+            0.1
+        )
+        
+        mock_service = MagicMock()
+        mock_service.retriever = mock_retriever
+        mock_get_retrieval_service.return_value = mock_service
+
+        mock_coding_response = MagicMock()
+        mock_coding_response.tool_calls = []
+        mock_coding_response.content = "CSS is done."
+        mock_coding_llm = MagicMock()
+        mock_coding_llm.invoke.return_value = mock_coding_response
+        mock_get_model.return_value = mock_coding_llm
+
+        state = {
+            "current_task": "Write dynamic CSS stylesheet",
+            "scratchpad": "",
+            "messages": []
+        }
+        
+        res = coding_worker_node(state)
+        self.assertEqual(res["worker_complete"]["coding_worker"], True)
+        
+        # Verify that get_retrieval_service and retriever.retrieve were invoked
+        mock_get_retrieval_service.assert_called_once()
+        mock_retriever.retrieve.assert_called_once_with("Write dynamic CSS stylesheet", top_k=3)
+        
+        # Verify the system prompt message had the injected rules
+        invoked_messages = mock_coding_llm.invoke.call_args[0][0]
+        sys_msg = invoked_messages[0]
+        self.assertIn("DYNAMIC DEVELOPER RULES & KNOWLEDGE GUIDELINES", sys_msg.content)
+        self.assertIn("Always write complete CSS stylesheets.", sys_msg.content)
+        self.assertIn("Enforce dark mode glassmorphic styling.", sys_msg.content)
+
+
 
 if __name__ == "__main__":
     unittest.main()
